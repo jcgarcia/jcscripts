@@ -1,0 +1,146 @@
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    installscripts
+# Description:    Sets up the environment for the scripts repository. Extracts
+#                 scripts from the library, makes them executable, updates PATH,
+#                 and ensures configuration file consistency.
+# Usage:          installscripts
+# Author:         Julio Cesar Garcia
+# Date:           20/03/2025
+# Version:        3.4
+# ------------------------------------------------------------------------------
+
+# Validate the library file
+validate_library() {
+  LIB_ARCHIVE="./lib/scripts.ar"
+  if [[ ! -f "$LIB_ARCHIVE" ]]; then
+    echo "ERROR: Library file $LIB_ARCHIVE not found. Aborting installation."
+    exit 1
+  fi
+}
+
+# Extract scripts from the library
+extract_scripts() {
+  echo "Extracting scripts from library..."
+  TARGET_DIR="$HOME/scripts"
+  mkdir -p "$TARGET_DIR"
+
+  # Navigate to the target directory for extraction
+  cd "$TARGET_DIR" || exit 1
+  ar x "$LIB_ARCHIVE" || {
+    echo "ERROR: Failed to extract scripts from $LIB_ARCHIVE. Please check the archive."
+    exit 1
+  }
+
+  echo "Scripts extracted to $TARGET_DIR."
+}
+
+# Ensure the .jcscripts configuration file
+ensure_config_file() {
+  CONFIG_FILE="$HOME/scripts/.jcscripts"
+  HOME_CONFIG_FILE="$HOME/.jcscripts"
+
+  # Create default configuration if it doesn't exist
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "Creating default configuration file: $CONFIG_FILE..."
+    cat <<EOL > "$CONFIG_FILE"
+# Configuration for scripts
+EDITOR="vi"
+SCRIPTS_DIR="~/scripts"
+GITHUB_REPO="git@github.com:jcgarcia/jcscripts.git"
+SSH_KEY="~/.ssh/jc.pem"
+EOL
+    echo "Default configuration file created."
+  fi
+
+  # Ensure a copy exists in the user's home directory
+  if [[ ! -f "$HOME_CONFIG_FILE" ]]; then
+    echo "Copying configuration file to $HOME/.jcscripts for global access..."
+    cp "$CONFIG_FILE" "$HOME_CONFIG_FILE"
+  else
+    echo "Configuration file already exists at $HOME/.jcscripts. No action taken."
+  fi
+}
+
+# Make scripts executable
+make_executable() {
+  echo "Making valid scripts executable..."
+  find "$TARGET_DIR" -type f -exec chmod +x {} \;
+  echo "Scripts made executable."
+}
+
+# Add scripts directory to PATH
+update_path() {
+  echo "Adding scripts directory to PATH..."
+
+  # Determine the shell profile to update
+  SHELL_PROFILE=""
+  case "$SHELL" in
+    */bash)
+      SHELL_PROFILE="$HOME/.bashrc"
+      ;;
+    */ash)
+      SHELL_PROFILE="$HOME/.profile"
+      ;;
+    */csh | */tcsh)
+      SHELL_PROFILE="$HOME/.cshrc"
+      ;;
+    */ksh)
+      SHELL_PROFILE="$HOME/.kshrc"
+      ;;
+    *)
+      echo "WARNING: Unsupported shell detected. Please manually add $TARGET_DIR to your PATH."
+      return
+      ;;
+  esac
+
+  # Append PATH modification to the profile if not already added
+  if [[ -n "$SHELL_PROFILE" ]] && ! grep -q "export PATH=\$PATH:$TARGET_DIR" "$SHELL_PROFILE"; then
+    echo "export PATH=\$PATH:$TARGET_DIR" >> "$SHELL_PROFILE"
+  fi
+
+  # Apply PATH update immediately in the current session
+  export PATH="$PATH:$TARGET_DIR"
+
+  # Reload the shell configuration for the current session
+  case "$SHELL" in
+    */bash)
+      source "$HOME/.bashrc"
+      ;;
+    */ash)
+      source "$HOME/.profile" || . "$HOME/.profile"
+      ;;
+    */csh | */tcsh)
+      source "$HOME/.cshrc" || echo "Please run 'source ~/.cshrc' manually."
+      ;;
+    */ksh)
+      source "$HOME/.kshrc" || echo "Please run 'source ~/.kshrc' manually."
+      ;;
+  esac
+
+  echo "PATH updated for the current session and saved to $SHELL_PROFILE."
+}
+
+# Mark installation as complete
+mark_installation() {
+  MARKER="$HOME/.scripts_installed"
+  echo "Marking the installation as complete..."
+  touch "$MARKER"
+  echo "Installation marked with $MARKER."
+}
+
+# Main function
+main() {
+  echo "Starting installation process..."
+  validate_library
+  extract_scripts
+  ensure_config_file
+  make_executable
+  update_path
+  mark_installation
+  echo "Installation complete! You can now run the scripts from any location."
+}
+
+# Execute the main function
+main "$@"

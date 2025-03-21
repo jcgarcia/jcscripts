@@ -1,0 +1,2718 @@
+!<arch>
+//                                              38        `
+CreateOrganization/
+createawsaccount/
+/0              0           0     0     644     4093      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    createOrganization
+# Description:    Creates AWS Organizational Units and manages their structure.
+# Usage:          createOrganization [-h|--help] [-v|--version] [-p|--profile] [-r|--region]
+# Options:        -h | --help       Show this help message
+#                 -v | --version    Show script version
+#                 -p | --profile    AWS CLI profile to use
+#                 -r | --region     AWS region (default: us-east-1)
+# Author:         Julio Cesar Garcia
+# Date:           20/03/2025
+# Version:        1.2
+# ------------------------------------------------------------------------------
+
+set -e  # Exit immediately if a command exits with a non-zero status
+
+# Default values
+AWS_REGION="us-east-1"
+LOG_FILE="createOrganization.log"
+
+# Display usage information
+show_help() {
+  echo "Usage: createOrganization [options]"
+  echo "Options:"
+  echo "  -h | --help       Show this help message"
+  echo "  -v | --version    Show script version"
+  echo "  -p | --profile    AWS CLI profile to use"
+  echo "  -r | --region     AWS region (default: $AWS_REGION)"
+  echo
+  echo "Example:"
+  echo "  createOrganization -p MyProfile -r us-west-2"
+}
+
+# Display script version
+show_version() {
+  echo "createOrganization version 1.2"
+}
+
+# Error handling function
+handle_error() {
+  local exit_code=$1
+  local message=$2
+  echo "Error: $message (Exit Code: $exit_code)"
+  exit $exit_code
+}
+
+# Function to validate the AWS session
+validate_session() {
+  local profile="$1"
+
+  if [[ -z "$profile" ]]; then
+    handle_error 1 "AWS profile is not provided. Please specify a profile."
+  fi
+
+  # Check if AWS CLI is installed
+  if ! command -v aws &> /dev/null; then
+    handle_error 1 "AWS CLI is not installed. Please install it and try again."
+  fi
+
+  # Validate the AWS CLI profile
+  if ! aws sts get-caller-identity --profile "$profile" > /dev/null 2>&1; then
+    handle_error 1 "AWS CLI session is not valid or the profile is misconfigured: $profile."
+    echo "Please log in using 'aws sso login --profile $profile' and try again."
+    exit 1
+  fi
+}
+
+# Function to create Organizational Units (OUs)
+create_ou() {
+  local profile="$1"
+  local parent_id="$2"
+  local ou_name="$3"
+
+  echo "Creating Organizational Unit: $ou_name under parent ID: $parent_id..."
+  ou_id=$(aws organizations create-organizational-unit \
+    --profile "$profile" \
+    --parent-id "$parent_id" \
+    --name "$ou_name" \
+    --query "OrganizationalUnit.Id" --output text)
+  
+  if [[ -n "$ou_id" ]]; then
+    echo "Organizational Unit '$ou_name' created successfully (ID: $ou_id)"
+  else
+    handle_error 1 "Failed to create Organizational Unit: $ou_name."
+  fi
+}
+
+# Main function
+main() {
+  # Parse command-line arguments
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      -v|--version)
+        show_version
+        exit 0
+        ;;
+      -p|--profile)
+        AWS_PROFILE="$2"
+        shift 2
+        ;;
+      -r|--region)
+        AWS_REGION="$2"
+        shift 2
+        ;;
+      *)
+        echo "Unknown option: $1"
+        show_help
+        exit 1
+        ;;
+    esac
+  done
+
+  # Validate required parameters
+  if [[ -z "$AWS_PROFILE" ]]; then
+    handle_error 1 "AWS CLI profile is required. Use the -p option."
+  fi
+
+  # Validate AWS session
+  validate_session "$AWS_PROFILE"
+
+  # Retrieve Root ID
+  echo "Fetching root ID for the AWS Organization..."
+  ROOT_ID=$(aws organizations list-roots \
+    --query "Roots[0].Id" \
+    --output text \
+    --region "$AWS_REGION" \
+    --profile "$AWS_PROFILE")
+
+  if [[ -z "$ROOT_ID" ]]; then
+    handle_error 1 "Failed to retrieve the root ID of the organization."
+  fi
+  echo "Root ID: $ROOT_ID"
+
+  # Example: Create Organizational Units under the Root
+  create_ou "$AWS_PROFILE" "$ROOT_ID" "Engineering"
+  create_ou "$AWS_PROFILE" "$ROOT_ID" "Finance"
+  create_ou "$AWS_PROFILE" "$ROOT_ID" "HR"
+
+  echo "Organizational structure successfully created!"
+}
+
+# Execute the main function
+main "$@"
+
+awsaccess/      0           0     0     644     4317      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    awsaccess
+# Description:    Manage IAM Identity Center operations such as users, groups,
+#                 permission sets, and account access.
+# Usage:          awsaccess [-h|--help] [operation] 
+# Operations:     
+#                 - list-users                List all users
+#                 - list-groups               List all groups
+#                 - list-permissionsets       List all permission sets
+#                 - create-user               Create a new user
+#                 - create-group              Create a new group
+#                 - create-permissionset      Create a new permission set
+# Author:         Julio Cesar Garcia
+# Date:           15/03/2025
+# Version:        1.9
+# ------------------------------------------------------------------------------
+
+# Help Page Function
+show_help() {
+  echo "Usage: awsaccess [operation]"
+  echo "Manage IAM Identity Center users, groups, permission sets, and account access."
+  echo ""
+  echo "Operations:"
+  echo "  list-users                List all users"
+  echo "  list-groups               List all groups"
+  echo "  list-permissionsets       List all permission sets"
+  echo "  create-user               Create a new user"
+  echo "  create-group              Create a new group"
+  echo "  create-permissionset      Create a new permission set"
+  echo ""
+  echo "Example Usage:"
+  echo "  awsaccess list-users"
+  echo "  awsaccess create-user"
+  echo "  awsaccess assign-access"
+  echo ""
+}
+
+# Function to handle errors
+handle_error() {
+  local exit_code=$1
+  local message=$2
+  echo "ERROR: $message (Exit Code: $exit_code)" >&2
+  exit $exit_code
+}
+
+# Validate AWS session
+validate_session() {
+  echo "[DEBUG] Validating AWS session..."
+  aws sts get-caller-identity &> /dev/null
+  if [ $? -ne 0 ]; then
+    echo "[DEBUG] AWS session expired or invalid. Attempting to refresh..."
+    awslogin
+    aws sts get-caller-identity &> /dev/null
+    if [ $? -ne 0 ]; then
+      handle_error 1 "Failed to refresh AWS session. Please log in manually."
+    fi
+  fi
+  echo "[DEBUG] AWS session is valid."
+}
+
+# Fetch Identity Store ID
+fetch_identity_store_id() {
+  echo "[DEBUG] Fetching Identity Store ID..."
+  local identity_store_id
+  identity_store_id=$(aws sso-admin list-instances --query "Instances[0].IdentityStoreId" --output text 2>/dev/null)
+  if [[ -z "$identity_store_id" || "$identity_store_id" == "null" || ! "$identity_store_id" =~ ^d-[0-9a-f]{10}$ ]]; then
+    handle_error 1 "Failed to retrieve a valid Identity Store ID. Please ensure IAM Identity Center is correctly configured."
+  fi
+  echo "$identity_store_id"
+}
+
+# Fetch Instance ARN
+fetch_instance_arn() {
+  echo "[DEBUG] Fetching Instance ARN..."
+  local instance_arn
+  instance_arn=$(aws sso-admin list-instances --query "Instances[0].InstanceArn" --output text 2>/dev/null)
+  if [[ -z "$instance_arn" || "$instance_arn" == "null" ]]; then
+    handle_error 1 "Failed to retrieve a valid Instance ARN. Ensure IAM Identity Center is properly configured."
+  fi
+  echo "$instance_arn"
+}
+
+# Function to list all users
+list_users() {
+  validate_session
+  local identity_store_id
+  identity_store_id=$(fetch_identity_store_id)
+  echo "[DEBUG] Using Identity Store ID: $identity_store_id"
+  echo "Listing all users..."
+  aws identitystore list-users --identity-store-id "$identity_store_id" --output table || handle_error 1 "Failed to list users. Ensure sufficient permissions for IAM Identity Store."
+}
+
+# Function to list all groups
+list_groups() {
+  validate_session
+  local identity_store_id
+  identity_store_id=$(fetch_identity_store_id)
+  echo "[DEBUG] Using Identity Store ID: $identity_store_id"
+  echo "Listing all groups..."
+  aws identitystore list-groups --identity-store-id "$identity_store_id" --output table || handle_error 1 "Failed to list groups. Ensure sufficient permissions for IAM Identity Store."
+}
+
+# Main script logic
+main() {
+  if [ $# -eq 0 ]; then
+    show_help
+    exit 0
+  fi
+
+  case "$1" in
+    -h|--help)
+      show_help
+      ;;
+    list-users)
+      list_users
+      ;;
+    list-groups)
+      list_groups
+      ;;
+    *)
+      echo "Unknown operation: $1"
+      show_help
+      exit 1
+      ;;
+  esac
+}
+
+# Execute the main function
+main "$@"
+
+awsaddprofile/  0           0     0     644     2356      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    awsaddprofile
+# Description:    Interactively add new AWS profiles and validate login.
+# Usage:          awsaddprofile
+# Author:         Julio Cesar Garcia
+# Date:           12/03/2025
+# Version:        2.0
+# ------------------------------------------------------------------------------
+
+AWS_CONFIG_FILE="$HOME/.aws/config"
+
+# Function to add a new AWS profile interactively
+add_profile() {
+  echo "Adding a new AWS profile..."
+
+  # Prompt for profile name
+  read -rp "Enter a profile name: " profile_name
+
+  # Prompt for SSO session name
+  read -rp "Enter the SSO session name: " sso_session
+
+  # Prompt for the SSO start URL
+  read -rp "Enter the SSO start URL (e.g., https://yourcompany.awsapps.com/start): " sso_start_url
+
+  # Prompt for the AWS region
+  read -rp "Enter the AWS region (e.g., eu-west-2): " aws_region
+
+  # Prompt for the SSO account ID
+  read -rp "Enter the AWS account ID: " aws_account_id
+
+  # Prompt for the role name
+  read -rp "Enter the role name: " role_name
+
+  # Add the SSO session to the AWS config file
+  echo "[sso-session $sso_session]" >> "$AWS_CONFIG_FILE"
+  echo "sso_start_url = $sso_start_url" >> "$AWS_CONFIG_FILE"
+  echo "sso_region = $aws_region" >> "$AWS_CONFIG_FILE"
+  echo "sso_registration_scopes = sso:account:access" >> "$AWS_CONFIG_FILE"
+
+  # Add the profile linked to the SSO session
+  echo "[profile $profile_name]" >> "$AWS_CONFIG_FILE"
+  echo "sso_session = $sso_session" >> "$AWS_CONFIG_FILE"
+  echo "sso_account_id = $aws_account_id" >> "$AWS_CONFIG_FILE"
+  echo "sso_role_name = $role_name" >> "$AWS_CONFIG_FILE"
+  echo "region = $aws_region" >> "$AWS_CONFIG_FILE"
+  echo "output = json" >> "$AWS_CONFIG_FILE"
+
+  echo "Profile '$profile_name' added successfully!"
+}
+
+# Function to validate AWS SSO login for a given profile
+validate_login() {
+  echo "Validating AWS SSO login for the newly added profile..."
+  aws sso login --profile "$profile_name"
+
+  if [[ $? -eq 0 ]]; then
+    echo "Successfully logged in with profile: $profile_name"
+  else
+    echo "Failed to log in with profile: $profile_name. Please check the configuration and try again."
+    exit 1
+  fi
+}
+
+# Main logic to add and validate profiles
+main() {
+  add_profile
+  validate_login
+}
+
+# Execute the main function
+main
+
+awslogin/       0           0     0     644     5120      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    awslogin
+# Description:    Dynamically sets AWS default profile after SSO login, while hiding the default profile from selection.
+# Usage:          awslogin
+# Author:         Julio Cesar Garcia
+# Date:           20/03/2025
+# Version:        3.2
+# ------------------------------------------------------------------------------
+
+# Function to retrieve the access token for the current profile
+get_access_token() {
+  echo "Retrieving access token for profile: $AWS_PROFILE..."
+  token_file=$(find ~/.aws/sso/cache/ -type f -exec grep -l "startUrl" {} +)
+
+  if [[ -z "$token_file" ]]; then
+    echo "ERROR: No valid session token found. Please log in again using 'aws sso login'."
+    exit 1
+  fi
+
+  echo "DEBUG: Token file located: $token_file"
+  access_token=$(jq -r '.accessToken' "$token_file")
+
+  if [[ -z "$access_token" ]]; then
+    echo "ERROR: Failed to retrieve the access token from $token_file."
+    exit 1
+  fi
+
+  echo "DEBUG: Access token retrieved successfully."
+}
+
+# Function to dynamically list and select accounts
+select_account() {
+  echo "Fetching available accounts..."
+  accounts=$(aws sso list-accounts --access-token "$access_token" --region "eu-west-2" --query "accountList[*].{ID:accountId,Name:accountName}" --output json)
+
+  if [[ -z "$accounts" || "$accounts" == "[]" ]]; then
+    echo "ERROR: No accounts found for the selected profile."
+    exit 1
+  fi
+
+  # Display account options for user selection
+  echo "Available accounts:"
+  mapfile -t account_ids < <(echo "$accounts" | jq -r '.[].ID')
+  mapfile -t account_names < <(echo "$accounts" | jq -r '.[].Name')
+
+  for i in "${!account_ids[@]}"; do
+    echo "$((i + 1))) ${account_names[i]} (${account_ids[i]})"
+  done
+
+  read -rp "Select an account by number: " account_choice
+  selected_account_id="${account_ids[$((account_choice - 1))]}"
+
+  if [[ -z "$selected_account_id" ]]; then
+    echo "ERROR: Invalid selection. Exiting."
+    exit 1
+  fi
+
+  echo "You selected account: $selected_account_id (${account_names[$((account_choice - 1))]})"
+}
+
+# Function to dynamically list and select roles for the selected account
+select_role() {
+  echo "Fetching available roles for account ID $selected_account_id..."
+  roles=$(aws sso list-account-roles --access-token "$access_token" --region "eu-west-2" --account-id "$selected_account_id" --query "roleList[*].roleName" --output json)
+
+  if [[ -z "$roles" || "$roles" == "[]" ]]; then
+    echo "ERROR: No roles found for the selected account."
+    exit 1
+  fi
+
+  # Display roles for user selection
+  echo "Available roles:"
+  mapfile -t role_names < <(echo "$roles" | jq -r '.[]')
+
+  for i in "${!role_names[@]}"; do
+    echo "$((i + 1))) ${role_names[i]}"
+  done
+
+  read -rp "Select a role by number: " role_choice
+  selected_role_name="${role_names[$((role_choice - 1))]}"
+
+  if [[ -z "$selected_role_name" ]]; then
+    echo "ERROR: Invalid selection. Exiting."
+    exit 1
+  fi
+
+  echo "You selected role: $selected_role_name"
+}
+
+# Function to set credentials to the default profile
+use_selected_account_role() {
+  echo "Fetching credentials for account $selected_account_id and role $selected_role_name..."
+  credentials=$(aws sso get-role-credentials --access-token "$access_token" --region "eu-west-2" --account-id "$selected_account_id" --role-name "$selected_role_name" --output json)
+
+  if [[ -z "$credentials" ]]; then
+    echo "ERROR: Failed to retrieve credentials for account $selected_account_id and role $selected_role_name."
+    exit 1
+  fi
+
+  # Extract credentials
+  access_key_id=$(echo "$credentials" | jq -r '.roleCredentials.accessKeyId')
+  secret_access_key=$(echo "$credentials" | jq -r '.roleCredentials.secretAccessKey')
+  session_token=$(echo "$credentials" | jq -r '.roleCredentials.sessionToken')
+
+  # Save credentials to the default profile
+  aws configure set aws_access_key_id "$access_key_id" --profile default
+  aws configure set aws_secret_access_key "$secret_access_key" --profile default
+  aws configure set aws_session_token "$session_token" --profile default
+  aws configure set region "eu-west-2" --profile default
+
+  echo "Temporary credentials set as the default profile. You can now run AWS CLI commands without specifying '--profile'."
+}
+
+
+# Main function
+main() {
+  echo "Listing available AWS profiles..."
+  select AWS_PROFILE in $(aws configure list-profiles | grep -v '^default$'); do
+    if [[ -n "$AWS_PROFILE" ]]; then
+      echo "You selected AWS profile: $AWS_PROFILE"
+      break
+    else
+      echo "ERROR: Invalid selection. Please try again."
+    fi
+  done
+
+  # Automatically log out of the current session
+  echo "Logging out of any active SSO session..."
+  aws sso logout
+
+  # Clear SSO cache and perform a fresh login
+  echo "Clearing SSO cache..."
+  rm -rf ~/.aws/sso/cache/*
+  echo "Cache cleared. Logging in to the selected profile..."
+  aws sso login --profile "$AWS_PROFILE"
+
+  # Proceed with the workflow
+  get_access_token
+  select_account
+  select_role
+  use_selected_account_role
+}
+
+
+# Execute the main function
+main
+
+awsmoveaccount/ 0           0     0     644     4130      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    awsmoveaccount
+# Description:    Fixed script to move a newly created AWS account within the organization.
+# Usage:          awsmoveaccount
+# Author:         Julio Cesar Garcia
+# Date:           15/03/2025
+# Version:        5.1
+# ------------------------------------------------------------------------------
+
+# Function to handle errors
+handle_error() {
+  local exit_code=$1
+  local message=$2
+  echo "Error: $message (Exit Code: $exit_code)"
+  exit $exit_code
+}
+
+# Function to validate the AWS session
+validate_session() {
+  local profile="$1"
+  
+  # Check if the profile is provided
+  if [[ -z "$profile" ]]; then
+    handle_error 1 "AWS profile is not provided. Please specify a profile."
+  fi
+
+  # Check if the AWS CLI is installed
+  if ! command -v aws &> /dev/null; then
+    handle_error 1 "AWS CLI is not installed. Please install it and try again."
+  fi
+
+  # Validate the AWS CLI profile
+  if ! aws sts get-caller-identity --profile "$profile" > /dev/null 2>&1; then
+    handle_error 1 "AWS CLI session is not valid or the profile is misconfigured: $profile."
+    echo "Please log in using 'aws sso login --profile $profile' and try again."
+    exit 1
+  fi
+}
+
+# Function to fetch the AWS Organization Root ID using the management account
+fetch_organization_root_id() {
+  echo "Fetching root ID for the AWS organization..."
+  local org_root_id
+  org_root_id=$(aws organizations list-roots --query "Roots[0].Id" --output text 2> /dev/null)
+  if [ $? -ne 0 ] || [ -z "$org_root_id" ]; then
+    handle_error 1 "Failed to fetch the organization's root ID. Please check your credentials and permissions."
+  fi
+  echo "Organization Root ID: $org_root_id"
+  echo "$org_root_id"
+}
+
+# Function to fetch the account’s current parent ID
+fetch_account_parent_id() {
+  local account_id="$1"
+  echo "Fetching source parent ID for the account..."
+  local parent_id
+  parent_id=$(aws organizations list-parents --child-id "$account_id" --query "Parents[0].Id" --output text 2> /dev/null)
+  if [ $? -ne 0 ] || [ -z "$parent_id" ]; then
+    handle_error 1 "Failed to fetch the account's source parent ID. Please check the account's hierarchy."
+  fi
+  echo "Source Parent ID: $parent_id"
+  echo "$parent_id"
+}
+
+# Function to move an account
+move_account() {
+  local account_id org_root_id source_parent_id
+  local profile_name
+
+  read -p "Enter the AWS CLI profile to use: " profile_name
+  validate_session "$profile_name"
+
+  read -p "Enter the Account ID to move: " account_id
+  if [[ ! $account_id =~ ^[0-9]{12}$ ]]; then
+    handle_error 1 "Invalid Account ID. It must be a 12-digit number."
+  fi
+
+  # Fetch organization root ID using the management account
+  org_root_id=$(AWS_PROFILE="$profile_name" fetch_organization_root_id)
+
+  # Fetch the current parent ID of the account
+  source_parent_id=$(AWS_PROFILE="$profile_name" fetch_account_parent_id "$account_id")
+
+  # Validate account status
+  echo "Validating account status..."
+  account_status=$(aws organizations describe-account --account-id "$account_id" --query "Account.Status" --output text --profile "$profile_name" 2> /dev/null)
+  if [ $? -ne 0 ]; then
+    handle_error 1 "Unable to retrieve the account status. Ensure the account exists and you have sufficient permissions."
+  fi
+  echo "Account status: $account_status"
+
+  if [ "$account_status" != "ACTIVE" ]; then
+    handle_error 1 "The account is not in an ACTIVE state. Moving it is not allowed."
+  fi
+
+  echo "Moving account $account_id from $source_parent_id to $org_root_id..."
+  aws organizations move-account --account-id "$account_id" --source-parent-id "$source_parent_id" --destination-parent-id "$org_root_id" --profile "$profile_name"
+  if [ $? -ne 0 ]; then
+    handle_error 1 "Failed to move the account. Verify your permissions and input."
+  fi
+
+  echo "Account $account_id successfully moved from $source_parent_id to the organization root ID $org_root_id."
+}
+
+# Main script execution
+main() {
+  echo "Starting MoveAccount operation..."
+  move_account
+}
+
+# Trigger main function
+main "$@"
+awsnewaccount/  0           0     0     644     5613      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    awsnewaccount
+# Description:    Create a new AWS account, wait for creation, and verify membership in the organization.
+# Usage:          awsnewaccount
+# Author:         Julio Cesar Garcia
+# Date:           15/03/2025
+# Version:        2.2
+# ------------------------------------------------------------------------------
+
+# Function to handle errors
+handle_error() {
+  local exit_code=$1
+  local message=$2
+  echo "Error: $message (Exit Code: $exit_code)"
+  exit $exit_code
+}
+
+# Function to validate the AWS session
+validate_session() {
+  local profile="$1"
+  
+  # Check if the profile is provided
+  if [[ -z "$profile" ]]; then
+    handle_error 1 "AWS profile is not provided. Please specify a profile."
+  fi
+
+  # Check if the AWS CLI is installed
+  if ! command -v aws &> /dev/null; then
+    handle_error 1 "AWS CLI is not installed. Please install it and try again."
+  fi
+
+  # Validate the AWS CLI profile
+  if ! aws sts get-caller-identity --profile "$profile" > /dev/null 2>&1; then
+    handle_error 1 "AWS CLI session is not valid or the profile is misconfigured: $profile."
+    echo "Please log in using 'aws sso login --profile $profile' and try again."
+    exit 1
+  fi
+}
+
+# Function to check if an account is part of the organization
+check_account_membership() {
+  local profile="$1"
+  local account_id="$2"
+  echo "Checking if account $account_id is part of the organization..."
+  accounts_list=$(aws organizations list-accounts --profile "$profile" --query "Accounts[].Id" --output text 2> /dev/null)
+  if [ $? -ne 0 ]; then
+    handle_error 1 "Failed to retrieve accounts list. Please check your permissions."
+  fi
+
+  if [[ $accounts_list =~ $account_id ]]; then
+    echo "Account $account_id is already part of the organization."
+    return 0
+  else
+    echo "Account $account_id is NOT part of the organization."
+    return 1
+  fi
+}
+
+# Function to create a new AWS account
+create_account() {
+  local profile="$1"
+  local email account_name
+
+  read -p "Enter the email address for the new account: " email
+  read -p "Enter the name for the new account: " account_name
+
+  echo "Creating a new AWS account: $account_name with email: $email..."
+  create_account_response=$(aws organizations create-account --profile "$profile" --email "$email" --account-name "$account_name" 2> /dev/null)
+
+  if [ $? -ne 0 ]; then
+    handle_error 1 "Failed to create the AWS account. Please check your input and permissions."
+  fi
+
+  request_id=$(echo "$create_account_response" | jq -r '.CreateAccountStatus.Id')
+  echo "Account creation in progress. Request ID: $request_id"
+
+  # Poll the status of the account creation
+  while true; do
+    status=$(aws organizations describe-create-account-status --profile "$profile" --create-account-request-id "$request_id" | jq -r '.CreateAccountStatus.State')
+    echo "Current status: $status"
+
+    if [[ "$status" == "SUCCEEDED" ]]; then
+      account_id=$(aws organizations describe-create-account-status --profile "$profile" --create-account-request-id "$request_id" | jq -r '.CreateAccountStatus.AccountId')
+      echo "Account successfully created! Account ID: $account_id"
+      break
+    elif [[ "$status" == "FAILED" ]]; then
+      handle_error 1 "Account creation failed. Check the AWS Management Console for more details."
+    else
+      echo "Waiting for account creation to complete..."
+      sleep 10
+    fi
+  done
+
+  echo "$account_id"
+}
+
+# Function to move an account to the organization root (if necessary)
+move_account() {
+  local profile="$1"
+  local account_id="$2"
+  local org_root_id source_parent_id
+
+  echo "Fetching organization root ID..."
+  org_root_id=$(aws organizations list-roots --profile "$profile" --query "Roots[0].Id" --output text 2> /dev/null)
+  if [ $? -ne 0 ]; then
+    handle_error 1 "Failed to fetch organization root ID. Please check your permissions."
+  fi
+  echo "Organization Root ID: $org_root_id"
+
+  echo "Fetching source parent ID for account $account_id..."
+  source_parent_id=$(aws organizations list-parents --profile "$profile" --child-id "$account_id" --query "Parents[0].Id" --output text 2> /dev/null)
+  if [ $? -ne 0 ]; then
+    handle_error 1 "Failed to fetch source parent ID. Please check your permissions."
+  fi
+  echo "Source Parent ID: $source_parent_id"
+
+  if [[ "$org_root_id" == "$source_parent_id" ]]; then
+    echo "Account $account_id is already under the organization root."
+    return
+  fi
+
+  echo "Moving account $account_id to the organization root..."
+  aws organizations move-account --profile "$profile" --account-id "$account_id" --source-parent-id "$source_parent_id" --destination-parent-id "$org_root_id"
+  if [ $? -ne 0 ]; then
+    handle_error 1 "Failed to move the account. Please check your permissions and input."
+  fi
+
+  echo "Account $account_id successfully moved to the organization root."
+}
+
+# Main script logic
+main() {
+  local profile
+  read -p "Enter the AWS CLI profile to use: " profile
+  validate_session "$profile"
+
+  echo "Creating a new AWS account..."
+  account_id=$(create_account "$profile")
+
+  echo "Waiting briefly to ensure account details propagate..."
+  sleep 15  # Allow time for AWS to finalize account creation
+
+  echo "Verifying account membership in the organization..."
+  if check_account_membership "$profile" "$account_id"; then
+    echo "No further actions are necessary."
+  else
+    echo "Account is not yet part of the organization. Attempting to move it..."
+    move_account "$profile" "$account_id"
+  fi
+}
+
+# Execute the main function
+main "$@"
+
+awsorg/         0           0     0     644     6254      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    awsorg
+# Description:    Fetch and display AWS Organization layout in multiple formats.
+# Usage:          awsorg.sh [-h|--help] [-v|--version] [-f|--format FORMAT]
+# Options:        -h | --help    Show this help message
+#                 -v | --version Show script version
+#                 -f | --format  Specify the output format (json, table, text, tree)
+# Author:         Julio Cesar Garcia
+# Date:           15/03/2025
+# Version:        3.1
+# ------------------------------------------------------------------------------
+
+# Display usage information
+show_help() {
+  echo "Usage: ./awsorg.sh [options]"
+  echo "Options:"
+  echo "  -h | --help    Show this help message"
+  echo "  -v | --version Show script version"
+  echo "  -f | --format  Specify the output format (json, table, text, tree)"
+}
+
+# Display script version
+show_version() {
+  echo "awsorg.sh version 3.1"
+}
+
+# Error handling function
+handle_error() {
+  local exit_code=$1
+  local message=$2
+  echo "Error: $message (Exit Code: $exit_code)"
+  exit $exit_code
+}
+
+# Function to validate the AWS session
+validate_session() {
+  local profile="$1"
+  
+  if [[ -z "$profile" ]]; then
+    handle_error 1 "AWS profile is not provided. Please specify a profile."
+  fi
+
+  # Check if AWS CLI is installed
+  if ! command -v aws &> /dev/null; then
+    handle_error 1 "AWS CLI is not installed. Please install it and try again."
+  fi
+
+  # Validate the AWS CLI profile
+  if ! aws sts get-caller-identity --profile "$profile" > /dev/null 2>&1; then
+    handle_error 1 "AWS CLI session is not valid or the profile is misconfigured: $profile."
+    echo "Please log in using 'aws sso login --profile $profile' and try again."
+    exit 1
+  fi
+}
+
+# Cleanup function to handle temporary files
+cleanup() {
+  echo "Cleaning up temporary files..."
+}
+trap cleanup EXIT
+
+# Recursive function to fetch and display organizational units and accounts
+fetch_tree_structure() {
+  local parent_id="$1"
+  local indent="$2"
+  local profile="$3"
+
+  # Fetch child OUs for the parent
+  ous=$(aws organizations list-organizational-units-for-parent --parent-id "$parent_id" --query "OrganizationalUnits" --output json --profile "$profile" 2> /dev/null)
+  if [ $? -ne 0 ]; then
+    handle_error 1 "Failed to fetch organizational units for parent ID $parent_id."
+  fi
+
+  echo "$ous" | jq -c '.[]' | while read -r ou; do
+    ou_id=$(echo "$ou" | jq -r '.Id')
+    ou_name=$(echo "$ou" | jq -r '.Name')
+    echo "${indent}OU: $ou_name (ID: $ou_id)"
+
+    # Fetch accounts within the current OU
+    accounts=$(aws organizations list-accounts-for-parent --parent-id "$ou_id" --query "Accounts" --output json --profile "$profile" 2> /dev/null)
+    if [ $? -ne 0 ]; then
+      handle_error 1 "Failed to fetch accounts for OU ID $ou_id."
+    fi
+
+    echo "$accounts" | jq -c '.[]' | while read -r account; do
+      account_id=$(echo "$account" | jq -r '.Id')
+      account_name=$(echo "$account" | jq -r '.Name')
+      echo "${indent}  Account: $account_name (ID: $account_id)"
+    done
+
+    # Recursive call to fetch sub-OUs
+    fetch_tree_structure "$ou_id" "  $indent" "$profile"
+  done
+}
+
+# Function to fetch and display organization details in the selected format
+get_organization() {
+  local format="${1:-json}" # Default to JSON format if none provided
+  local profile="$2"        # AWS CLI profile
+
+  # Validate format input
+  case "$format" in
+    json|table|text|tree)
+      ;;
+    *)
+      handle_error 1 "Invalid format: $format. Allowed values are json, table, text, or tree."
+      ;;
+  esac
+
+  validate_session "$profile"
+
+  echo "Fetching AWS Organization information in '$format' format..."
+
+  if [ "$format" == "tree" ]; then
+    # Tree format output
+    echo "Fetching root ID..."
+    root_id=$(aws organizations list-roots --query "Roots[0].Id" --output text --profile "$profile" 2> /dev/null)
+    if [ $? -ne 0 ]; then
+      handle_error 1 "Failed to fetch root ID. Please check your permissions."
+    fi
+
+    echo "Root: (ID: $root_id)"
+    fetch_tree_structure "$root_id" "  " "$profile"
+  else
+    # Standard AWS CLI-supported formats
+    echo "Fetching organization details..."
+    organization_info=$(aws organizations describe-organization --output "$format" --profile "$profile" 2> /dev/null)
+    if [ $? -ne 0 ]; then
+      handle_error 1 "Failed to fetch organization details. Please check your permissions."
+    fi
+    echo "Organization Details:"
+    echo "$organization_info"
+
+    echo "Fetching list of accounts..."
+    accounts=$(aws organizations list-accounts --output "$format" --profile "$profile" 2> /dev/null)
+    if [ $? -ne 0 ]; then
+      handle_error 1 "Failed to list accounts. Please check your permissions."
+    fi
+    echo "Accounts:"
+    echo "$accounts"
+
+    echo "Fetching organizational units..."
+    root_id=$(aws organizations list-roots --query "Roots[0].Id" --output text --profile "$profile" 2> /dev/null)
+    if [ $? -ne 0 ]; then
+      handle_error 1 "Failed to fetch root ID."
+    fi
+
+    ous=$(aws organizations list-organizational-units-for-parent --parent-id "$root_id" --output "$format" --profile "$profile" 2> /dev/null)
+    if [ $? -ne 0 ]; then
+      handle_error 1 "Failed to fetch organizational units. Please check your permissions."
+    fi
+    echo "Organizational Units:"
+    echo "$ous"
+  fi
+}
+
+# Main script logic
+main() {
+  if [ $# -eq 0 ]; then
+    read -p "Enter the AWS CLI profile to use: " profile
+    get_organization "json" "$profile" # Default to JSON output if no arguments provided
+    exit 0
+  fi
+
+  # Parse command-line options
+  local profile=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      -v|--version)
+        show_version
+        exit 0
+        ;;
+      -f|--format)
+        format="$2"
+        shift 2
+        ;;
+      --profile)
+        profile="$2"
+        shift 2
+        ;;
+      *)
+        echo "Unknown option: $1"
+        show_help
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ -z "$profile" ]]; then
+    read -p "Enter the AWS CLI profile to use: " profile
+  fi
+
+  get_organization "${format:-json}" "$profile"
+}
+
+# Execute the main function
+main "$@"
+awsres/         0           0     0     644     5727      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    awsres
+# Description:    Retrieve and display AWS resource information.
+# Usage:          awsres [-h|--help] [-v|--version] [-r|--resources] [-2|--r2]
+# Options:        -h | --help        Show this help message
+#                 -v | --version     Show script version
+#                 -r | --resources   Fetch and display AWS resources
+# Author:         Julio Cesar Garcia
+# Date:           28/02/2025
+# Version:        2.1
+# ------------------------------------------------------------------------------
+
+# Display usage information
+show_help() {
+  echo "Usage: ./awsres [options]"
+  echo "Options:"
+  echo "  -h | --help        Show this help message"
+  echo "  -v | --version     Show script version"
+  echo "  -r | --resources   Fetch and display AWS resources"
+  echo "  -2 | --r2          Fetch an extended list of AWS resources"
+}
+
+# Display script version
+show_version() {
+  echo "awsres version 2.1"
+}
+
+# Error handling function
+handle_error() {
+  local exit_code=$1
+  local message=$2
+  echo "Error: $message (Exit Code: $exit_code)"
+  exit $exit_code
+}
+
+# Function to validate the AWS session
+validate_session() {
+  local profile="$1"
+
+  if [[ -z "$profile" ]]; then
+    handle_error 1 "AWS profile is not provided. Please specify a profile."
+  fi
+
+  # Check if AWS CLI is installed
+  if ! command -v aws &> /dev/null; then
+    handle_error 1 "AWS CLI is not installed. Please install it and try again."
+  fi
+
+  # Validate the AWS CLI profile
+  if ! aws sts get-caller-identity --profile "$profile" > /dev/null 2>&1; then
+    handle_error 1 "AWS CLI session is not valid or the profile is misconfigured: $profile."
+    echo "Please log in using 'aws sso login --profile $profile' and try again."
+    exit 1
+  fi
+}
+
+# Function to fetch a detailed list of AWS resources (basic version)
+aws_resources() {
+  local profile="$1"
+  validate_session "$profile"
+
+  echo "Retrieving information about AWS resources and their statuses..."
+  echo "This may take a moment..."
+
+  # Fetch a list of all tagged resources
+  resources=$(aws resourcegroupstaggingapi get-resources --profile "$profile" --output json)
+  
+  if [ $? -ne 0 ]; then
+    handle_error 1 "Failed to retrieve resources. Please check your AWS permissions."
+  fi
+
+  echo "Resources and their statuses:"
+  echo "$resources" | jq '.ResourceTagMappingList[] | {ResourceARN: .ResourceARN, Tags: .Tags}'
+}
+
+# Function to fetch an extended list of AWS resources
+aws_resources2() {
+  local profile="$1"
+  validate_session "$profile"
+
+  echo "Fetching detailed AWS resources..."
+  echo "-----------------------------------------------"
+
+  # List EC2 instances
+  echo "EC2 Instances:"
+  aws ec2 describe-instances --profile "$profile" --query 'Reservations[*].Instances[*].[InstanceId,InstanceType,State.Name,PublicIpAddress]' --output table
+  echo "-----------------------------------------------"
+
+  # List S3 buckets
+  echo "S3 Buckets:"
+  aws s3 ls --profile "$profile"
+  echo "-----------------------------------------------"
+
+  # List RDS instances
+  echo "RDS Instances:"
+  aws rds describe-db-instances --profile "$profile" --query 'DBInstances[*].[DBInstanceIdentifier,DBInstanceClass,Engine,DBInstanceStatus]' --output table
+  echo "-----------------------------------------------"
+
+  # List Lambda functions
+  echo "Lambda Functions:"
+  aws lambda list-functions --profile "$profile" --query 'Functions[*].[FunctionName,Runtime,LastModified]' --output table
+  echo "-----------------------------------------------"
+
+  # List ECS clusters
+  echo "ECS Clusters:"
+  aws ecs list-clusters --profile "$profile" --query 'clusterArns' --output table
+  echo "-----------------------------------------------"
+
+  # List EKS clusters
+  echo "EKS Clusters:"
+  aws eks list-clusters --profile "$profile" --query 'clusters' --output table
+  echo "-----------------------------------------------"
+
+  # List CloudFormation stacks
+  echo "CloudFormation Stacks:"
+  aws cloudformation list-stacks --profile "$profile" --query 'StackSummaries[*].[StackName,StackStatus,CreationTime]' --output table
+  echo "-----------------------------------------------"
+
+  # List IAM roles
+  echo "IAM Roles:"
+  aws iam list-roles --profile "$profile" --query 'Roles[*].[RoleName,Arn]' --output table
+  echo "-----------------------------------------------"
+
+  # List DynamoDB tables
+  echo "DynamoDB Tables:"
+  aws dynamodb list-tables --profile "$profile" --query 'TableNames' --output table
+  echo "-----------------------------------------------"
+
+  # List SQS queues
+  echo "SQS Queues:"
+  aws sqs list-queues --profile "$profile" --query 'QueueUrls' --output table
+  echo "-----------------------------------------------"
+
+  # List SNS topics
+  echo "SNS Topics:"
+  aws sns list-topics --profile "$profile" --query 'Topics[*].[TopicArn]' --output table
+  echo "-----------------------------------------------"
+
+  echo "Resource check complete."
+}
+
+# Main script logic
+main() {
+  local profile=""
+  read -p "Enter the AWS CLI profile to use: " profile
+
+  # Check if no arguments were provided
+  if [ $# -eq 0 ]; then
+    aws_resources "$profile"
+    exit 0
+  fi
+
+  # Parse command-line options
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      -v|--version)
+        show_version
+        exit 0
+        ;;
+      -r|--resources)
+        aws_resources "$profile"
+        exit 0
+        ;;
+      -2|--r2)
+        aws_resources2 "$profile"
+        exit 0
+        ;;
+      *)
+        echo "Unknown option: $1"
+        show_help
+        exit 1
+        ;;
+    esac
+    shift
+  done
+}
+
+# Execute the main function
+main "$@"
+
+backup/         0           0     0     644     3824      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    backup
+# Description:    Backup WSL distributions to an external location.
+# Usage:          backup [options]
+# Options:
+#                 -h | --help       Show this help message
+#                 -v | --version    Show script version
+#                 --list            List all WSL distributions
+#                 -d | --distro     Specify the distribution to back up
+#                 -l | --location   Specify the backup location
+# Author:         Julio Cesar Garcia
+# Date:           2025-03-21
+# Version:        6.1
+# ------------------------------------------------------------------------------
+
+# Default backup directory
+DEFAULT_BACKUP_DIR="/mnt/c/backup/wsl"
+
+# Display script version
+show_version() {
+  echo "backup version 6.1"
+}
+
+# List WSL distributions
+list_distributions() {
+  echo "Processing and cleaning the distribution list..."
+
+  /mnt/c/Windows/System32/wsl.exe --list \
+    | sed '1d' \
+    | sed 's/ (Default)//g' \
+    | tr -cd '\11\12\15\40-\176' \
+    | sed '/^$/d' \
+    | awk '{$1=$1; print}'
+}
+
+# Validate distribution existence
+validate_distro() {
+  local distro="$1"
+
+  # Fetch sanitized list
+  local distro_list
+  distro_list=$(list_distributions)
+
+  # Ensure the list is not empty
+  if [[ -z "$distro_list" ]]; then
+    echo "ERROR: Failed to retrieve a valid distribution list."
+    exit 1
+  fi
+
+  # Strip (Default) from the list
+  distro_list=${distro_list// \(Default\)/}
+
+  # Compare sanitized distro input with each line
+  while IFS= read -r line; do
+    line=$(echo "$line" | tr -d '\r\n') # Sanitize line
+    if [[ "$line" == "$distro" ]]; then
+      return 0
+    fi
+  done <<< "$distro_list"
+
+  echo "ERROR: Distribution '$distro' not found."
+  exit 1
+}
+
+# Get the currently running distribution using $WSL_DISTRO_NAME
+get_active_distro() {
+  if [[ -n "$WSL_DISTRO_NAME" ]]; then
+    echo "$WSL_DISTRO_NAME"
+  else
+    echo "ERROR: Unable to detect active distribution. WSL_DISTRO_NAME is not set."
+    exit 1
+  fi
+}
+
+# Main script logic
+main() {
+  local distro=""
+  local backup_dir="$DEFAULT_BACKUP_DIR"
+
+  # Parse options
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      -v|--version)
+        show_version
+        exit 0
+        ;;
+      --list)
+        list_distributions
+        exit 0
+        ;;
+      -d|--distro)
+        distro="$2"
+        shift 2
+        ;;
+      -l|--location)
+        backup_dir="$2"
+        shift 2
+        ;;
+      *)
+        echo "Unknown option: $1"
+        exit 1
+        ;;
+    esac
+  done
+
+  if [[ -z "$distro" ]]; then
+    echo "ERROR: No distribution specified."
+    exit 1
+  fi
+
+  validate_distro "$distro"
+
+  # Detect if the user is trying to back up the currently active distribution
+  local active_distro
+  active_distro=$(get_active_distro)
+
+  if [[ "$distro" == "$active_distro" ]]; then
+    echo "WARNING: You are attempting to back up the active distribution ('$active_distro')."
+    echo "This operation may cause the terminal session to close unexpectedly."
+    read -p "Do you wish to continue? (yes/no): " user_choice
+    if [[ "$user_choice" != "yes" ]]; then
+      echo "Backup operation canceled by user."
+      exit 1
+    fi
+  fi
+
+  # Ensure backup directory exists
+  mkdir -p "$backup_dir"
+
+  # Define backup file name
+  local backup_file="C:\\backup\\wsl\\${distro}_backup_$(date +"%Y-%m-%d_%H-%M-%S").tar"
+
+  # Perform the actual backup using PowerShell
+  echo "Starting backup for '$distro' using PowerShell..."
+  powershell.exe -Command "wsl.exe --export \"$distro\" \"$backup_file\"" || {
+    echo "ERROR: Failed to export distribution '$distro'."
+    exit 1
+  }
+
+  echo "Backup completed successfully: $backup_file"
+}
+
+# Execute script
+main "$@"connecttoaws/   0           0     0     644     2535      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    connecttoaws
+# Description:    Logs into AWS SSO with the specified profile and optionally
+#                 executes AWS CLI commands using that profile.
+# Usage:          connecttoaws <profile-name> [<aws-command>]
+# Options:        -h | --help    Show this help message
+# Author:         Julio Cesar Garcia
+# Date:           20/03/2025
+# Version:        1.1
+# ------------------------------------------------------------------------------
+
+# Display usage information
+show_help() {
+  echo "Usage: $0 <profile-name> [<aws-command>]"
+  echo "Options:"
+  echo "  -h | --help    Show this help message"
+  echo "Example:"
+  echo "  $0 my-profile"
+  echo "  $0 my-profile 'aws s3 ls'"
+}
+
+# Check if AWS CLI is installed
+check_aws_cli() {
+  if ! command -v aws &> /dev/null; then
+    echo "ERROR: AWS CLI is not installed. Please install it and try again."
+    exit 1
+  fi
+}
+
+# Validate the AWS profile
+validate_profile() {
+  local profile="$1"
+  if ! aws configure list-profiles | grep -q "^$profile$"; then
+    echo "ERROR: AWS profile '$profile' not found. Please check your configuration."
+    exit 1
+  fi
+}
+
+# Main function
+main() {
+  # Show help if no arguments are provided or -h/--help is passed
+  if [[ $# -eq 0 || "$1" == "-h" || "$1" == "--help" ]]; then
+    show_help
+    exit 0
+  fi
+
+  # Extract the profile name
+  PROFILE_NAME="$1"
+  shift # Remove the profile name from arguments
+
+  # Check for AWS CLI and validate profile
+  check_aws_cli
+  validate_profile "$PROFILE_NAME"
+
+  # Login to AWS SSO using the provided profile name
+  echo "Attempting to login with profile: $PROFILE_NAME"
+  aws sso login --profile "$PROFILE_NAME"
+  if [[ $? -ne 0 ]]; then
+    echo "ERROR: Failed to log in to AWS SSO with profile: $PROFILE_NAME"
+    exit 1
+  fi
+  echo "SUCCESS: Logged in to AWS SSO with profile: $PROFILE_NAME"
+
+  # Execute the optional AWS command if provided
+  if [[ $# -gt 0 ]]; then
+    echo "Executing AWS command with profile '$PROFILE_NAME': $@"
+    AWS_PROFILE="$PROFILE_NAME" "$@"
+    if [[ $? -ne 0 ]]; then
+      echo "ERROR: AWS command failed."
+      exit 1
+    fi
+  else
+    # Default behavior: List S3 buckets
+    echo "Listing S3 buckets with profile '$PROFILE_NAME'..."
+    aws s3 ls --profile "$PROFILE_NAME"
+    if [[ $? -ne 0 ]]; then
+      echo "ERROR: Failed to list S3 buckets with profile: $PROFILE_NAME"
+      exit 1
+    fi
+  fi
+
+  echo "Done."
+}
+
+# Execute the main function
+main "$@"
+
+
+createOrgAdm/   0           0     0     644     6633      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    createOrgAdm
+# Description:    Creates an Organization Administrator user and permission set
+#                 for AWS SSO with the specified profile and region.
+# Usage:          createOrgAdm [-p|--profile PROFILE] [-e|--email EMAIL] [-r|--region REGION]
+# Options:        -h | --help       Show this help message
+#                 -v | --version    Show script version
+#                 -p | --profile    AWS CLI profile to use
+#                 -e | --email      OrgAdm user email address
+#                 -r | --region     AWS region (default: us-east-1)
+# Author:         Julio Cesar Garcia
+# Date:           20/03/2025
+# Version:        1.2
+# ------------------------------------------------------------------------------
+
+set -e  # Exit immediately if a command exits with a non-zero status
+
+# Default values
+AWS_REGION="eu-west-2"
+LOG_FILE="createOrgAdm.log"
+
+# Display usage information
+show_help() {
+  echo "Usage: createOrgAdm [options]"
+  echo "Options:"
+  echo "  -h | --help       Show this help message"
+  echo "  -v | --version    Show script version"
+  echo "  -p | --profile    AWS CLI profile to use"
+  echo "  -e | --email      OrgAdm user email address"
+  echo "  -r | --region     AWS region (default: $AWS_REGION)"
+  echo
+  echo "Example:"
+  echo "  createOrgAdm -p MyProfile -e orgadm@example.com -r us-west-2"
+}
+
+# Display script version
+show_version() {
+  echo "createOrgAdm version 1.2"
+}
+
+# Error handling function
+handle_error() {
+  local exit_code=$1
+  local message=$2
+  echo "Error: $message (Exit Code: $exit_code)"
+  exit $exit_code
+}
+
+# Function to validate the AWS session
+validate_session() {
+  local profile="$1"
+
+  if [[ -z "$profile" ]]; then
+    handle_error 1 "AWS profile is not provided. Please specify a profile."
+  fi
+
+  # Check if AWS CLI is installed
+  if ! command -v aws &> /dev/null; then
+    handle_error 1 "AWS CLI is not installed. Please install it and try again."
+  fi
+
+  # Validate the AWS CLI profile
+  if ! aws sts get-caller-identity --profile "$profile" > /dev/null 2>&1; then
+    handle_error 1 "AWS CLI session is not valid or the profile is misconfigured: $profile."
+    echo "Please log in using 'aws sso login --profile $profile' and try again."
+    exit 1
+  fi
+}
+
+# Main function
+main() {
+  # Parse command-line arguments
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      -v|--version)
+        show_version
+        exit 0
+        ;;
+      -p|--profile)
+        AWS_PROFILE="$2"
+        shift 2
+        ;;
+      -e|--email)
+        ORGADM_EMAIL="$2"
+        shift 2
+        ;;
+      -r|--region)
+        AWS_REGION="$2"
+        shift 2
+        ;;
+      *)
+        echo "Unknown option: $1"
+        show_help
+        exit 1
+        ;;
+    esac
+  done
+
+  # Validate required parameters
+  if [[ -z "$AWS_PROFILE" ]]; then
+    handle_error 1 "AWS CLI profile is required. Use the -p option."
+  fi
+
+  if [[ -z "$ORGADM_EMAIL" ]]; then
+    handle_error 1 "OrgAdm user email is required. Use the -e option."
+  fi
+
+  # Validate AWS session
+  validate_session "$AWS_PROFILE"
+
+  # Log in to AWS SSO
+  echo "[$(date)] Logging in to AWS SSO with profile: $AWS_PROFILE..." | tee -a "$LOG_FILE"
+  aws sso login --profile "$AWS_PROFILE"
+
+  # AWS SSO Instance ARN
+  SSO_INSTANCE_ARN=$(aws sso-admin list-instances --query "Instances[0].InstanceArn" --output text --region "$AWS_REGION" --profile "$AWS_PROFILE")
+  echo "[$(date)] SSO Instance ARN: $SSO_INSTANCE_ARN" | tee -a "$LOG_FILE"
+
+  # Management Account ID
+  MANAGEMENT_ACCOUNT_ID=$(aws organizations describe-organization --query "Organization.MasterAccountId" --output text --region "$AWS_REGION" --profile "$AWS_PROFILE")
+  echo "[$(date)] Management Account ID: $MANAGEMENT_ACCOUNT_ID" | tee -a "$LOG_FILE"
+
+  echo "[$(date)] Creating OrganizationAdministration permission set..." | tee -a "$LOG_FILE"
+
+  # Create the Permission Set
+  PERMISSION_SET_ARN=$(aws sso-admin create-permission-set \
+    --instance-arn "$SSO_INSTANCE_ARN" \
+    --name "OrganizationAdministration" \
+    --description "Permission set for Organization Administration" \
+    --session-duration "PT4H" \
+    --query "PermissionSet.PermissionSetArn" --output text --region "$AWS_REGION" --profile "$AWS_PROFILE")
+  echo "[$(date)] Permission Set ARN: $PERMISSION_SET_ARN" | tee -a "$LOG_FILE"
+
+  # Attach AWS Managed Policies
+  echo "[$(date)] Attaching managed policies..." | tee -a "$LOG_FILE"
+  for policy in "arn:aws:iam::aws:policy/AdministratorAccess" \
+                "arn:aws:iam::aws:policy/AWSOrganizationsFullAccess" \
+                "arn:aws:iam::aws:policy/IAMFullAccess"; do
+    aws sso-admin attach-managed-policy-to-permission-set \
+      --instance-arn "$SSO_INSTANCE_ARN" \
+      --permission-set-arn "$PERMISSION_SET_ARN" \
+      --managed-policy-arn "$policy" --region "$AWS_REGION" --profile "$AWS_PROFILE"
+  done
+
+  # Provision the Permission Set
+  echo "[$(date)] Provisioning the permission set..." | tee -a "$LOG_FILE"
+  aws sso-admin provision-permission-set \
+    --instance-arn "$SSO_INSTANCE_ARN" \
+    --permission-set-arn "$PERMISSION_SET_ARN" --region "$AWS_REGION" --profile "$AWS_PROFILE"
+
+  # Retrieve Identity Store ID
+  IDENTITY_STORE_ID=$(aws sso-admin list-instances --query "Instances[0].IdentityStoreId" --output text --region "$AWS_REGION" --profile "$AWS_PROFILE")
+  echo "[$(date)] Identity Store ID: $IDENTITY_STORE_ID" | tee -a "$LOG_FILE"
+
+  # Create the OrgAdm User
+  echo "[$(date)] Creating OrgAdm user with email: $ORGADM_EMAIL..." | tee -a "$LOG_FILE"
+  ORGADM_USER_ID=$(aws identitystore create-user \
+    --identity-store-id "$IDENTITY_STORE_ID" \
+    --user-name "OrgAdm" \
+    --display-name "Organization Administrator" \
+    --emails "[{\"Value\":\"$ORGADM_EMAIL\",\"Type\":\"work\"}]" \
+    --query "UserId" --output text --region "$AWS_REGION" --profile "$AWS_PROFILE")
+
+  # Assign the OrgAdm user to the Management Account
+  echo "[$(date)] Assigning OrgAdm user to Management Account..." | tee -a "$LOG_FILE"
+  aws sso-admin create-account-assignment \
+    --instance-arn "$SSO_INSTANCE_ARN" \
+    --target-id "$MANAGEMENT_ACCOUNT_ID" \
+    --target-type "AWS_ACCOUNT" \
+    --permission-set-arn "$PERMISSION_SET_ARN" \
+    --principal-type "USER" \
+    --principal-id "$ORGADM_USER_ID" --region "$AWS_REGION" --profile "$AWS_PROFILE"
+
+  echo "[$(date)] OrgAdm user and OrganizationAdministration permission set successfully created and assigned!" | tee -a "$LOG_FILE"
+}
+
+# Execute the main function
+main "$@"
+
+/20             0           0     0     644     5363      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    createawsaccount
+# Description:    Creates new AWS accounts in an organization and monitors the
+#                 creation process until completion.
+# Usage:          createawsaccount [options]
+# Options:        -h | --help        Show this help message
+#                 -v | --version     Show script version
+#                 -r | --role        Organization role (default: OrganizationAccountAccessRole)
+#                 -p | --profile     Management account profile (default: Foreman)
+#                 -a | --account     Account details in the format: <project>:<env>:<email>
+# Author:         Julio Cesar Garcia
+# Date:           20/03/2025
+# Version:        2.1
+# ------------------------------------------------------------------------------
+
+set -e  # Exit immediately on any error
+
+# Default values
+ORG_ROLE="OrganizationAccountAccessRole"
+MANAGEMENT_PROFILE="Foreman"
+LOG_FILE="createawsaccount.log"
+
+# Display usage information
+show_help() {
+  echo "Usage: createawsaccount [options]"
+  echo "Options:"
+  echo "  -h | --help        Show this help message"
+  echo "  -v | --version     Show script version"
+  echo "  -r | --role        Organization role (default: $ORG_ROLE)"
+  echo "  -p | --profile     Management account profile (default: $MANAGEMENT_PROFILE)"
+  echo "  -a | --account     Account details in the format: <project>:<env>:<email>"
+  echo
+  echo "Example:"
+  echo "  createawsaccount -a FinTech:dev:dev@example.com -a FinTech:prod:prod@example.com"
+}
+
+# Display script version
+show_version() {
+  echo "createawsaccount version 2.1"
+}
+
+# Function to handle errors
+handle_error() {
+  local exit_code=$1
+  local message=$2
+  echo "Error: $message (Exit Code: $exit_code)"
+  exit $exit_code
+}
+
+# Function to validate the AWS session
+validate_session() {
+  local profile="$1"
+
+  if [[ -z "$profile" ]]; then
+    handle_error 1 "AWS profile is not provided. Please specify a profile."
+  fi
+
+  # Check if AWS CLI is installed
+  if ! command -v aws &> /dev/null; then
+    handle_error 1 "AWS CLI is not installed. Please install it and try again."
+  fi
+
+  # Validate the AWS CLI profile
+  if ! aws sts get-caller-identity --profile "$profile" > /dev/null 2>&1; then
+    handle_error 1 "AWS CLI session is not valid or the profile is misconfigured: $profile."
+    echo "Please log in using 'aws sso login --profile $profile' and try again."
+    exit 1
+  fi
+}
+
+# Create a single AWS account
+create_account() {
+  local profile="$1"
+  local project="$2"
+  local env="$3"
+  local email="$4"
+  local account_name="${project}-${env}"
+
+  echo "[$(date)] Creating AWS account: $account_name..." | tee -a "$LOG_FILE"
+
+  local account_id
+  account_id=$(aws organizations create-account \
+    --email "$email" \
+    --account-name "$account_name" \
+    --role-name "$ORG_ROLE" \
+    --query 'CreateAccountStatus.Id' \
+    --output text \
+    --profile "$profile")
+
+  echo "[$(date)] Waiting for account creation to complete..." | tee -a "$LOG_FILE"
+  while true; do
+    local status
+    status=$(aws organizations describe-create-account-status \
+      --create-account-request-id "$account_id" \
+      --query 'CreateAccountStatus.State' \
+      --output text \
+      --profile "$profile")
+
+    if [[ "$status" == "SUCCEEDED" ]]; then
+      local new_account_id
+      new_account_id=$(aws organizations describe-create-account-status \
+        --create-account-request-id "$account_id" \
+        --query 'CreateAccountStatus.AccountId' \
+        --output text \
+        --profile "$profile")
+      echo "[$(date)] Account created successfully: $new_account_id" | tee -a "$LOG_FILE"
+      echo "$new_account_id" > "${account_name}_id.txt"
+      break
+    elif [[ "$status" == "FAILED" ]]; then
+      echo "[$(date)] ERROR: Account creation failed. Check AWS Console for details." | tee -a "$LOG_FILE"
+      exit 1
+    fi
+    echo "[$(date)] Waiting... (Current status: $status)" | tee -a "$LOG_FILE"
+    sleep 10
+  done
+
+  echo "[$(date)] $env account for $project created: $new_account_id" | tee -a "$LOG_FILE"
+}
+
+# Main script logic
+main() {
+  # Parse command-line arguments
+  local accounts=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        show_help
+        exit 0
+        ;;
+      -v|--version)
+        show_version
+        exit 0
+        ;;
+      -r|--role)
+        ORG_ROLE="$2"
+        shift 2
+        ;;
+      -p|--profile)
+        MANAGEMENT_PROFILE="$2"
+        shift 2
+        ;;
+      -a|--account)
+        accounts+=("$2")
+        shift 2
+        ;;
+      *)
+        echo "Unknown option: $1"
+        show_help
+        exit 1
+        ;;
+    esac
+  done
+
+  # Validate AWS session
+  validate_session "$MANAGEMENT_PROFILE"
+
+  # Validate input parameters
+  if [[ ${#accounts[@]} -eq 0 ]]; then
+    handle_error 1 "No accounts specified. Use the -a option to provide account details."
+  fi
+
+  # Process each account
+  for account in "${accounts[@]}"; do
+    IFS=":" read -r project env email <<< "$account"
+    if [[ -z "$project" || -z "$env" || -z "$email" ]]; then
+      echo "ERROR: Invalid account format: $account"
+      echo "Expected format: <project>:<env>:<email>"
+      exit 1
+    fi
+    create_account "$MANAGEMENT_PROFILE" "$project" "$env" "$email"
+  done
+}
+
+# Execute the main function
+main "$@"
+
+createscripts/  0           0     0     644     2572      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    createscripts
+# Description:    Initializes a Git repository for scripts, commits them, and
+#                 pushes to a remote GitHub repository.
+# Usage:          createscripts <repository-name>
+# Options:        -h | --help    Show this help message
+# Author:         Julio Cesar Garcia
+# Date:           20/03/2025 
+# Version:        1.1
+# ------------------------------------------------------------------------------
+
+# Function to display help
+show_help() {
+  echo "Usage: createscripts <repository-name>"
+  echo "Description:"
+  echo "  Initializes a Git repository for scripts, commits them, and pushes"
+  echo "  to a remote GitHub repository."
+  echo
+  echo "Options:"
+  echo "  -h | --help    Show this help message"
+  echo
+  echo "Example:"
+  echo "  createscripts my-scripts-repo"
+}
+
+# Check for help option
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+  show_help
+  exit 0
+fi
+
+# Check if a repository name is provided
+if [ -z "$1" ]; then
+  echo "ERROR: No repository name provided."
+  show_help
+  exit 1
+fi
+
+REPO_NAME=$1
+
+# Prompt for GitHub username and email
+read -p "Enter your GitHub username: " USERNAME
+read -p "Enter your GitHub email: " EMAIL
+
+# Validate inputs
+if [[ -z "$USERNAME" || -z "$EMAIL" ]]; then
+  echo "ERROR: Both username and email must be provided. Exiting."
+  exit 1
+fi
+
+# Configure Git
+echo "Configuring Git..."
+git config --global user.name "$USERNAME"
+git config --global user.email "$EMAIL"
+
+# Navigate to the scripts directory
+if [ ! -d "$HOME/scripts" ]; then
+  echo "ERROR: The ~/scripts directory does not exist. Please ensure your scripts are located there."
+  exit 1
+fi
+
+cd ~/scripts
+
+# Initialize a Git repository
+if [ ! -d ".git" ]; then
+  echo "Initializing Git repository..."
+  git init
+else
+  echo "Git repository already initialized."
+fi
+
+# Add scripts to the repository
+echo "Adding scripts to the repository..."
+git add .
+
+# Commit the changes
+echo "Committing changes..."
+git commit -m "Initial commit of scripts"
+
+# Add the remote repository
+REMOTE_URL="https://github.com/$USERNAME/$REPO_NAME.git"
+git remote add origin "$REMOTE_URL" || {
+  echo "Remote repository already exists. Skipping 'git remote add'."
+}
+
+# Push to the remote repository
+echo "Pushing scripts to GitHub..."
+git push -u origin master || {
+  echo "ERROR: Failed to push to GitHub. Please check your repository settings and authentication."
+  exit 1
+}
+
+echo "✅ Scripts successfully pushed to GitHub repository: $REPO_NAME"
+device/         0           0     0     644     2334      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    device
+# Description:    Script to dynamically list, mount, and unmount devices, including WSL-mounted drives.
+# Usage:          device
+# Author:         Julio Cesar Garcia
+# Date:           03/03/2025
+# Version:        1.4
+# ------------------------------------------------------------------------------
+
+# Function to display available devices, including WSL-mounted drives
+list_devices() {
+  echo -e "\nAvailable devices:"
+  # Use `df -h` to display all mounted drives, ensuring it captures /mnt drives
+  df -h | grep '/mnt/' | awk '{printf "Filesystem: %-20s Size: %-10s Mounted on: %s\n", $1, $2, $6}'
+  echo
+}
+
+# Function to mount a device
+mount_device() {
+  read -rp "Enter the device name to mount (e.g., D: or E:): " device_name
+  read -rp "Enter the desired mount point (e.g., /mnt/custom): " mount_point
+
+  # Create the mount point if it doesn't exist
+  if [[ ! -d "$mount_point" ]]; then
+    sudo mkdir -p "$mount_point"
+    echo "Created mount point: $mount_point"
+  fi
+
+  # Mount the device
+  sudo mount -t drvfs "$device_name" "$mount_point"
+  if [[ $? -eq 0 ]]; then
+    echo "Device $device_name successfully mounted at $mount_point."
+  else
+    echo "ERROR: Failed to mount $device_name."
+  fi
+}
+
+# Function to unmount a device
+unmount_device() {
+  read -rp "Enter the mount point to unmount (e.g., /mnt/custom): " mount_point
+
+  # Unmount the device
+  sudo umount "$mount_point"
+  if [[ $? -eq 0 ]]; then
+    echo "Device successfully unmounted from $mount_point."
+  else
+    echo "ERROR: Failed to unmount $mount_point."
+  fi
+}
+
+# Main function to display the menu and handle user input
+main() {
+  while true; do
+    echo -e "\nChoose an option:"
+    echo "1) List devices"
+    echo "2) Mount a device"
+    echo "3) Unmount a device"
+    echo "4) Exit"
+
+    read -rp "Enter your choice (1-4): " choice
+
+    case "$choice" in
+      1) 
+        list_devices 
+        ;;
+      2) 
+        mount_device 
+        ;;
+      3) 
+        unmount_device 
+        ;;
+      4) 
+        echo "Exiting the script. Goodbye!"
+        break  # Break the loop to exit the script
+        ;;
+      *) 
+        echo "ERROR: Invalid choice. Please try again." 
+        ;;
+    esac
+  done
+}
+
+# Execute the main function
+main
+edit/           0           0     0     644     4523      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    edit
+# Description:    Edits an existing script or creates a new one with a default template.
+# Usage:          edit [script_name]
+# Options:        -h | --help    Show this help message
+#                 -v | --version Show script version
+# Author:         Julio Cesar Garcia
+# Date:           05/03/2025
+# Version:        2.5
+# ------------------------------------------------------------------------------
+
+# Default configuration file path
+CONFIG_FILE="$HOME/scripts/.jcscripts"
+
+# Load configurations from .jcscripts
+if [[ -f "$CONFIG_FILE" ]]; then
+  source "$CONFIG_FILE"
+
+  # Expand `~` to `$HOME` in SCRIPTS_DIR if needed
+  SCRIPTS_DIR="${SCRIPTS_DIR/#\~/$HOME}"
+else
+  echo "Warning: Configuration file '$CONFIG_FILE' not found. Using default settings."
+  SCRIPTS_DIR="$HOME/scripts"
+fi
+
+# Use the editor specified in .jcscripts or fallback to vi
+DEFAULT_EDITOR="vi"
+EDITOR="${EDITOR:-$DEFAULT_EDITOR}"
+
+# Display usage information
+show_help() {
+  echo "Usage: edit [script_name]"
+  echo "Options:"
+  echo "  -h | --help    Show this help message"
+  echo "  -v | --version Show script version"
+  echo
+  echo "Description:"
+  echo "  Creates or edits a script in the $SCRIPTS_DIR directory with a default"
+  echo "  template if the script does not exist. Prevents conflicts with shell built-ins or system commands only when creating new scripts."
+}
+
+# Display script version
+show_version() {
+  echo "edit version 2.5"
+}
+
+# Function to handle errors
+handle_error() {
+  local message="$1"
+  echo "Error: $message"
+  exit 1
+}
+
+# Validate script name for creation
+validate_script_name() {
+  local script_name="$1"
+  local script_path="$SCRIPTS_DIR/$script_name"
+
+  # Skip validation for existing scripts
+  if [[ -f "$script_path" ]]; then
+    return 0
+  fi
+
+  # Check if the script name is empty or contains invalid characters
+  if [[ -z "$script_name" || "$script_name" =~ [^a-zA-Z0-9._-] ]]; then
+    handle_error "Invalid script name: $script_name. Please use only letters, numbers, dots, underscores, or hyphens."
+  fi
+
+  # Check if the name conflicts with a shell built-in or system command
+  if type "$script_name" &> /dev/null; then
+    handle_error "Script name '$script_name' conflicts with an existing shell built-in or system command. Please choose another name."
+  fi
+}
+
+# Function to create a new script with a default template
+create_new_script() {
+  local script_name="$1"
+  local script_path="$2"
+
+  echo "Creating a new script: $script_name..."
+  cat <<EOL > "$script_path"
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    $script_name
+# Description:    Add your description here.
+# Usage:          Add your usage here.
+# Author:         $LOGNAME
+# Date:           $(date +%d/%m/%Y)
+# Version:        1.0
+# ------------------------------------------------------------------------------
+
+# Display usage information
+show_help() {
+  echo "Usage: ./$script_name [options]"
+  echo "Options:"
+  echo "  -h | --help    Show this help message"
+  echo "  -v | --version Show script version"
+}
+
+# Display script version
+show_version() {
+  echo "$script_name version 1.0"
+}
+
+# Main script logic
+main() {
+  echo "Welcome to $0!"
+  echo "Add your code logic here."
+}
+
+# Execute the main function
+main "\$@"
+
+EOL
+
+  chmod +x "$script_path"
+  echo "New script created at: $script_path"
+}
+
+# Main function
+main() {
+  # Check if no arguments were provided
+  if [[ $# -eq 0 ]]; then
+    show_help
+    exit 1
+  fi
+
+  case "$1" in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    -v|--version)
+      show_version
+      exit 0
+      ;;
+    *)
+      # Define script name and path
+      local script_name="$1"
+      local script_path="$SCRIPTS_DIR/$script_name"
+
+      # Ensure target directory exists
+      mkdir -p "$SCRIPTS_DIR"
+
+      # If the script exists, open it for editing
+      if [[ -f "$script_path" ]]; then
+        echo "Opening existing script with $EDITOR: $script_path"
+        $EDITOR "$script_path"
+        exit 0
+      fi
+
+      # Validate the name only for creating a new script
+      validate_script_name "$script_name"
+
+      # Create the script if it doesn't exist
+      create_new_script "$script_name" "$script_path"
+
+      # Open the new script with the specified editor
+      echo "Opening script with $EDITOR: $script_path"
+      $EDITOR "$script_path"
+      ;;
+  esac
+}
+
+# Execute the main function
+main "$@"
+
+getamiinfo/     0           0     0     644     2229      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    getamiinfo
+# Description:    Retrieves detailed information about a specified AWS AMI using
+#                 a given AWS CLI profile.
+# Usage:          getamiinfo <ami-id> <profile-name>
+# Options:        -h | --help    Show this help message
+# Author:         Julio Cesar Garcia 
+# Date:           $(date +%Y-%m-%d)
+# Version:        1.1
+# ------------------------------------------------------------------------------
+
+# Function to display help
+show_help() {
+  echo "Usage: getamiinfo <ami-id> <profile-name>"
+  echo
+  echo "Description:"
+  echo "  Retrieves detailed information about the specified AMI using the"
+  echo "  provided AWS CLI profile."
+  echo
+  echo "Options:"
+  echo "  -h | --help    Show this help message"
+  echo
+  echo "Example:"
+  echo "  getamiinfo ami-0abcdef1234567890 my-profile"
+}
+
+# Check for help option
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+  show_help
+  exit 0
+fi
+
+# Check if required arguments are provided
+if [[ -z "$1" || -z "$2" ]]; then
+  echo "ERROR: Missing required arguments."
+  show_help
+  exit 1
+fi
+
+AMI_ID="$1"
+PROFILE_NAME="$2"
+
+# Check if AWS CLI is installed
+if ! command -v aws &> /dev/null; then
+  echo "ERROR: AWS CLI is not installed. Please install it and try again."
+  exit 1
+fi
+
+# Validate the provided AWS CLI profile
+if ! aws sts get-caller-identity --profile "$PROFILE_NAME" > /dev/null 2>&1; then
+  echo "ERROR: AWS CLI is not configured properly for profile: $PROFILE_NAME."
+  echo "Please check your AWS credentials and configuration for this profile."
+  exit 1
+fi
+
+# Retrieve information about the specified AMI
+echo "Retrieving information for AMI: $AMI_ID"
+echo "-----------------------------------------"
+
+AMI_INFO=$(aws ec2 describe-images --image-ids "$AMI_ID" --profile "$PROFILE_NAME" --output table 2>&1)
+
+# Check if the AMI retrieval command succeeded
+if [[ $? -ne 0 ]]; then
+  echo "ERROR: Failed to retrieve information for AMI: $AMI_ID"
+  echo "Details: $AMI_INFO"
+  exit 1
+fi
+
+# Display the retrieved information
+echo "$AMI_INFO"
+echo "-----------------------------------------"
+echo "AMI information retrieval complete."
+
+exit 0
+
+installscripts/ 0           0     0     644     4055      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    installscripts
+# Description:    Sets up the environment for the scripts repository. Extracts
+#                 scripts from the library, makes them executable, updates PATH,
+#                 and ensures configuration file consistency.
+# Usage:          installscripts
+# Author:         Julio Cesar Garcia
+# Date:           20/03/2025
+# Version:        3.4
+# ------------------------------------------------------------------------------
+
+# Validate the library file
+validate_library() {
+  LIB_ARCHIVE="./lib/scripts.ar"
+  if [[ ! -f "$LIB_ARCHIVE" ]]; then
+    echo "ERROR: Library file $LIB_ARCHIVE not found. Aborting installation."
+    exit 1
+  fi
+}
+
+# Extract scripts from the library
+extract_scripts() {
+  echo "Extracting scripts from library..."
+  TARGET_DIR="$HOME/scripts"
+  mkdir -p "$TARGET_DIR"
+
+  # Navigate to the target directory for extraction
+  cd "$TARGET_DIR" || exit 1
+  ar x "$LIB_ARCHIVE" || {
+    echo "ERROR: Failed to extract scripts from $LIB_ARCHIVE. Please check the archive."
+    exit 1
+  }
+
+  echo "Scripts extracted to $TARGET_DIR."
+}
+
+# Ensure the .jcscripts configuration file
+ensure_config_file() {
+  CONFIG_FILE="$HOME/scripts/.jcscripts"
+  HOME_CONFIG_FILE="$HOME/.jcscripts"
+
+  # Create default configuration if it doesn't exist
+  if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "Creating default configuration file: $CONFIG_FILE..."
+    cat <<EOL > "$CONFIG_FILE"
+# Configuration for scripts
+EDITOR="vi"
+SCRIPTS_DIR="~/scripts"
+GITHUB_REPO="git@github.com:jcgarcia/jcscripts.git"
+SSH_KEY="~/.ssh/jc.pem"
+EOL
+    echo "Default configuration file created."
+  fi
+
+  # Ensure a copy exists in the user's home directory
+  if [[ ! -f "$HOME_CONFIG_FILE" ]]; then
+    echo "Copying configuration file to $HOME/.jcscripts for global access..."
+    cp "$CONFIG_FILE" "$HOME_CONFIG_FILE"
+  else
+    echo "Configuration file already exists at $HOME/.jcscripts. No action taken."
+  fi
+}
+
+# Make scripts executable
+make_executable() {
+  echo "Making valid scripts executable..."
+  find "$TARGET_DIR" -type f -exec chmod +x {} \;
+  echo "Scripts made executable."
+}
+
+# Add scripts directory to PATH
+update_path() {
+  echo "Adding scripts directory to PATH..."
+
+  # Determine the shell profile to update
+  SHELL_PROFILE=""
+  case "$SHELL" in
+    */bash)
+      SHELL_PROFILE="$HOME/.bashrc"
+      ;;
+    */ash)
+      SHELL_PROFILE="$HOME/.profile"
+      ;;
+    */csh | */tcsh)
+      SHELL_PROFILE="$HOME/.cshrc"
+      ;;
+    */ksh)
+      SHELL_PROFILE="$HOME/.kshrc"
+      ;;
+    *)
+      echo "WARNING: Unsupported shell detected. Please manually add $TARGET_DIR to your PATH."
+      return
+      ;;
+  esac
+
+  # Append PATH modification to the profile if not already added
+  if [[ -n "$SHELL_PROFILE" ]] && ! grep -q "export PATH=\$PATH:$TARGET_DIR" "$SHELL_PROFILE"; then
+    echo "export PATH=\$PATH:$TARGET_DIR" >> "$SHELL_PROFILE"
+  fi
+
+  # Apply PATH update immediately in the current session
+  export PATH="$PATH:$TARGET_DIR"
+
+  # Reload the shell configuration for the current session
+  case "$SHELL" in
+    */bash)
+      source "$HOME/.bashrc"
+      ;;
+    */ash)
+      source "$HOME/.profile" || . "$HOME/.profile"
+      ;;
+    */csh | */tcsh)
+      source "$HOME/.cshrc" || echo "Please run 'source ~/.cshrc' manually."
+      ;;
+    */ksh)
+      source "$HOME/.kshrc" || echo "Please run 'source ~/.kshrc' manually."
+      ;;
+  esac
+
+  echo "PATH updated for the current session and saved to $SHELL_PROFILE."
+}
+
+# Mark installation as complete
+mark_installation() {
+  MARKER="$HOME/.scripts_installed"
+  echo "Marking the installation as complete..."
+  touch "$MARKER"
+  echo "Installation marked with $MARKER."
+}
+
+# Main function
+main() {
+  echo "Starting installation process..."
+  validate_library
+  extract_scripts
+  ensure_config_file
+  make_executable
+  update_path
+  mark_installation
+  echo "Installation complete! You can now run the scripts from any location."
+}
+
+# Execute the main function
+main "$@"
+
+listownamis/    0           0     0     644     2222      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    getamiinfo
+# Description:    Retrieves detailed information about a specified AWS AMI using
+#                 a given AWS CLI profile.
+# Usage:          getamiinfo <ami-id> <profile-name>
+# Options:        -h | --help    Show this help message
+# Author:         Julio Cesar Garcia
+# Date:           20/03/2025
+# Version:        2.0
+# ------------------------------------------------------------------------------
+
+# Function to display help
+show_help() {
+  echo "Usage: getamiinfo <ami-id> <profile-name>"
+  echo
+  echo "Description:"
+  echo "  Retrieves detailed information about the specified AMI using the"
+  echo "  provided AWS CLI profile."
+  echo
+  echo "Options:"
+  echo "  -h | --help    Show this help message"
+  echo
+  echo "Example:"
+  echo "  getamiinfo ami-0abcdef1234567890 my-profile"
+}
+
+# Check for help option
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+  show_help
+  exit 0
+fi
+
+# Check if required arguments are provided
+if [[ -z "$1" || -z "$2" ]]; then
+  echo "ERROR: Missing required arguments."
+  show_help
+  exit 1
+fi
+
+AMI_ID="$1"
+PROFILE_NAME="$2"
+
+# Check if AWS CLI is installed
+if ! command -v aws &> /dev/null; then
+  echo "ERROR: AWS CLI is not installed. Please install it and try again."
+  exit 1
+fi
+
+# Validate the provided AWS CLI profile
+if ! aws sts get-caller-identity --profile "$PROFILE_NAME" > /dev/null 2>&1; then
+  echo "ERROR: AWS CLI is not configured properly for profile: $PROFILE_NAME."
+  echo "Please check your AWS credentials and configuration for this profile."
+  exit 1
+fi
+
+# Retrieve information about the specified AMI
+echo "Retrieving information for AMI: $AMI_ID"
+echo "-----------------------------------------"
+
+AMI_INFO=$(aws ec2 describe-images --image-ids "$AMI_ID" --profile "$PROFILE_NAME" --output table 2>&1)
+
+# Check if the AMI retrieval command succeeded
+if [[ $? -ne 0 ]]; then
+  echo "ERROR: Failed to retrieve information for AMI: $AMI_ID"
+  echo "Details: $AMI_INFO"
+  exit 1
+fi
+
+# Display the retrieved information
+echo "$AMI_INFO"
+echo "-----------------------------------------"
+echo "AMI information retrieval complete."
+
+exit 0
+
+publish/        0           0     0     644     5587      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    publish
+# Description:    Script with command-line options to create or push the
+#                 distribution to GitHub and provide a help screen.
+# Usage:          publish [-c|--create] [-p|--push] [-h|--help]
+# Options:        -c | --create: Create the distribution
+#                 -p | --push: Push the distribution to GitHub
+#                 -h | --help: Display the help screen
+# Author:         Julio Cesar Garcia
+# Date:           20/03/2025
+# Version:        5.5
+# ------------------------------------------------------------------------------
+
+# Default configuration content for fallback
+DEFAULT_CONFIG='
+# Configuration for scripts
+EDITOR="vi"
+SCRIPTS_DIR="~/scripts"
+GITHUB_REPO="git@github.com:jcgarcia/jcscripts.git"
+SSH_KEY="~/.ssh/defaultkey.pem"
+'
+
+# Load configuration from $HOME/.jcscripts or ~/scripts/.jcscripts
+CONFIG_FILE="$HOME/.jcscripts"
+if [[ -f "$CONFIG_FILE" ]]; then
+  echo "Using configuration from $CONFIG_FILE."
+  source "$CONFIG_FILE"
+elif [[ -f "$HOME/scripts/.jcscripts" ]]; then
+  CONFIG_FILE="$HOME/scripts/.jcscripts"
+  echo "Using configuration from $CONFIG_FILE."
+  source "$CONFIG_FILE"
+else
+  echo "Configuration file not found in $HOME or $HOME/scripts. Using default values."
+  SCRIPTS_DIR="$HOME/scripts"
+  SSH_KEY="$HOME/.ssh/defaultkey.pem"
+  GITHUB_REPO="git@github.com:jcgarcia/jcscripts.git"
+  EDITOR="vi"
+fi
+
+# Expand ~ to $HOME in paths
+SCRIPTS_DIR="${SCRIPTS_DIR/#\~/$HOME}"
+SSH_KEY="${SSH_KEY/#\~/$HOME}"
+
+# Validate required configurations
+validate_configurations() {
+  if [[ -z "$SSH_KEY" ]]; then
+    echo "ERROR: Missing SSH key. Please ensure it is configured in $CONFIG_FILE or provide it in the defaults."
+    exit 1
+  fi
+  if [[ -z "$GITHUB_REPO" ]]; then
+    echo "ERROR: Missing GitHub repository URL. Please ensure it is configured in $CONFIG_FILE or provide it in the defaults."
+    exit 1
+  fi
+  if [[ ! -d "$SCRIPTS_DIR" ]]; then
+    echo "ERROR: Scripts directory ($SCRIPTS_DIR) does not exist. Please ensure it is configured in $CONFIG_FILE or provide a valid path."
+    exit 1
+  fi
+}
+
+# Display help screen
+display_help() {
+  echo "Usage: publish [options]"
+  echo "Options:"
+  echo "  -c | --create   Create the distribution package"
+  echo "  -p | --push     Push the distribution to GitHub"
+  echo "  -h | --help     Display this help screen"
+  echo
+}
+
+# Locate and copy core files to the distribution directory
+copy_core_files() {
+  echo "Copying core files..."
+
+  local files=("README.md" "README.pdf" "installscripts")
+  for file in "${files[@]}"; do
+    if [[ -f "$file" ]]; then
+      cp "$file" "$DIST_DIR/" || echo "WARNING: Failed to copy $file."
+    elif [[ -f "$SCRIPTS_DIR/$file" ]]; then
+      cp "$SCRIPTS_DIR/$file" "$DIST_DIR/" || echo "WARNING: Failed to copy $SCRIPTS_DIR/$file."
+    else
+      echo "WARNING: $file not found in the current directory or $SCRIPTS_DIR."
+    fi
+  done
+}
+
+# Prepare the distribution structure
+prepare_structure() {
+  echo "Preparing distribution structure..."
+
+  # Define the distribution directory
+  DIST_DIR="./dist"
+
+  # Clean up previous distribution if it exists
+  if [[ -d "$DIST_DIR" ]]; then
+    echo "Removing existing distribution directory..."
+    rm -rf "$DIST_DIR"
+  fi
+
+  # Create necessary folders
+  mkdir -p "$DIST_DIR/lib"
+
+  # Copy core files
+  copy_core_files
+
+  # Add default configuration
+  echo "$DEFAULT_CONFIG" > "$DIST_DIR/.jcscripts"
+
+  echo "Distribution structure prepared."
+}
+
+# Archive valid scripts into scripts.ar
+archive_scripts() {
+  echo "Archiving valid scripts into library..."
+
+  # Check if scripts directory is valid
+  if [[ ! -d "$SCRIPTS_DIR" ]]; then
+    echo "ERROR: Scripts directory ($SCRIPTS_DIR) is invalid. Cannot create scripts library."
+    return
+  fi
+
+  local archive_path="./dist/lib/scripts.ar"
+
+  # Loop through files in the scripts directory
+  for script in "$SCRIPTS_DIR"/*; do
+    if [[ -f "$script" && -x "$script" && "$script" == "${script%.*}" ]]; then
+      echo "Adding $script to $archive_path"
+      ar rcs "$archive_path" "$script"
+    else
+      echo "Skipping invalid or non-executable file: $script"
+    fi
+  done
+
+  echo "Valid scripts archived into $archive_path."
+}
+
+# Push the distribution to GitHub
+push_distribution() {
+  echo "Starting push process to GitHub..."
+
+  DIST_DIR="./dist"
+  if [[ ! -d "$DIST_DIR" ]]; then
+    echo "ERROR: Distribution directory does not exist. Please create the distribution first using the '-c' option."
+    exit 1
+  fi
+
+  cd "$DIST_DIR" || exit 1
+
+  # Initialize and prepare Git
+  git init --initial-branch=main
+  git remote add origin "$GITHUB_REPO" || true
+  git add .
+  git commit -m "Publishing scripts distribution" || echo "Nothing to commit, all changes are up to date."
+
+  # Force push to replace the remote repository contents
+  echo "Force-pushing to GitHub..."
+  GIT_SSH_COMMAND="ssh -i $SSH_KEY" git push origin main --force || {
+    echo "ERROR: Push failed. Please check your GitHub configuration."
+    exit 1
+  }
+
+  echo "Distribution pushed to GitHub successfully."
+}
+
+# Main function to parse options
+main() {
+  case "$1" in
+    -c|--create)
+      validate_configurations
+      prepare_structure
+      archive_scripts
+      ;;
+    -p|--push)
+      validate_configurations
+      push_distribution
+      ;;
+    -h|--help)
+      display_help
+      ;;
+    *)
+      echo "Invalid option. Use '-h' or '--help' for usage information."
+      exit 1
+      ;;
+  esac
+}
+
+# Execute the main function with the provided option
+main "$@"
+
+scripts/        0           0     0     644     2634      `
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    scripts
+# Description:    Lists all valid scripts in the configured scripts directory
+#                 (ignoring files with extensions). Extracts the header information
+#                 (Script Name, Description, Usage, etc.) or outputs just the
+#                 script names in columns with the -s|--short option.
+# Usage:          scripts [-s|--short]
+# Author:         Julio Cesar Garcia
+# Date:           20/03/2025
+# Version:        3.5
+# ------------------------------------------------------------------------------
+
+# Load the configuration file from the home directory or use defaults
+CONFIG_FILE="$HOME/.jcscripts"
+if [[ -f "$CONFIG_FILE" ]]; then
+  source "$CONFIG_FILE"
+  # Expand ~ to $HOME in SCRIPTS_DIR if needed
+  SCRIPTS_DIR="${SCRIPTS_DIR/#\~/$HOME}"
+  EDITOR="${EDITOR:-vi}" # Ensure EDITOR has a fallback
+else
+  echo "Configuration file not found. Using default values."
+  SCRIPTS_DIR="$HOME/scripts"
+  EDITOR="vi"
+fi
+
+# Function to extract and display header information
+extract_header() {
+  local script="$1"
+  echo "$(basename "$script")"
+  echo "--------------------------------------"
+
+  # Extract labeled header fields and skip invalid placeholders
+  grep -E "^(# *(Script Name|Description|Usage|Author|Date|Version):)" "$script" \
+    | sed -e 's/^# *//' \
+          -e '/\$script_name/d' \
+          -e '/\$LOGNAME/d' \
+          -e '/\$(date/d'
+
+  echo
+}
+
+# Function to list script names in columns
+list_short() {
+  local scripts="$1"
+
+  # Extract only the script names, ensuring single arguments per basename
+  for script in $scripts; do
+    basename "$script"
+  done | column
+}
+
+# Main function
+main() {
+  # Check if the scripts directory exists
+  if [[ ! -d "$SCRIPTS_DIR" ]]; then
+    echo "ERROR: Directory $SCRIPTS_DIR does not exist."
+    exit 1
+  fi
+
+  # Debugging output to confirm the directory being scanned
+  echo "Scanning scripts in: $SCRIPTS_DIR"
+
+  # Use find to only target files in the specified directory (top-level only)
+  local scripts
+  scripts=$(find "$SCRIPTS_DIR" -maxdepth 1 -type f ! -name "*.*" -exec file {} + | grep "ASCII text executable" | cut -d: -f1)
+
+  if [[ -z "$scripts" ]]; then
+    echo "No valid scripts found in $SCRIPTS_DIR."
+    exit 0
+  fi
+
+  # Check for the -s or --short option
+  if [[ "$1" == "-s" || "$1" == "--short" ]]; then
+    list_short "$scripts"
+    exit 0
+  fi
+
+  # Default: Display detailed header information for each script
+  for script in $scripts; do
+    extract_header "$script"
+  done
+}
+
+# Execute the main function
+main "$@"
