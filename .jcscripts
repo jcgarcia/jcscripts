@@ -1,0 +1,7 @@
+
+# Configuration for scripts
+EDITOR="vi"
+SCRIPTS_DIR="~/.scripts"
+GITHUB_REPO="git@github.com:jcgarcia/jcscripts.git"
+SSH_KEY="~/.ssh/defaultkey.pem"
+

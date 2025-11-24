@@ -1,0 +1,438 @@
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# Script Name:    installscripts
+# Description:    Sets up the environment for the scripts repository.
+#                 NOTE: Run 'installextras' first to install prerequisites.
+# Usage:          installscripts
+# Options:
+#                 -h | --help       Show this help message
+#                 -v | --version    Show script version
+# Author:         Julio Cesar Garcia
+# Date:           2025-11-20
+# Version:        4.0
+# ------------------------------------------------------------------------------
+
+VERSION="4.0"
+
+# Display help message
+show_help() {
+  cat << EOF
+Usage: installscripts [OPTIONS]
+
+Sets up the environment for the jcscripts repository by extracting scripts,
+making them executable, fixing line endings, and updating PATH.
+
+OPTIONS:
+  -h, --help       Display this help message and exit
+  -v, --version    Display script version and exit
+
+DESCRIPTION:
+  This script automates the setup of the jcscripts collection. It will:
+  
+  1. Check for required prerequisites (use 'installextras' to install them)
+  2. Extract scripts from the scripts.ar library
+  3. Make scripts executable
+  4. Fix line endings (CRLF to LF)
+  5. Update your PATH to include ~/.scripts
+
+PREREQUISITES:
+  Before running this script, ensure all required tools are installed:
+  
+  Quick method:
+    ./installextras    # Automatically installs all prerequisites
+  
+  Or install manually:
+    - git, binutils (ar), util-linux (column), ncurses (tput)
+    - jq, curl, unzip
+  
+  For AWS functionality:
+    ./awsinstall       # Automatically installs AWS CLI
+
+EXAMPLES:
+  installscripts              # Run the setup
+  installscripts -h           # Show this help message
+  installscripts -v           # Show version information
+
+AUTHOR:
+  Julio Cesar Garcia
+
+EOF
+}
+
+# Display version
+show_version() {
+  echo "installscripts version $VERSION"
+}
+
+
+# Clone the repository if it doesn't exist
+clone_repository() {
+  REPO_URL="https://github.com/jcgarcia/jcscripts.git"
+  INSTALL_DIR="$HOME/.scripts"
+
+  if [[ ! -d "$INSTALL_DIR" ]]; then
+    echo "Cloning the repository into $INSTALL_DIR..."
+    git clone "$REPO_URL" "$INSTALL_DIR" || {
+      echo "ERROR: Failed to clone the repository. Please check your Git configuration."
+      exit 1
+    }
+  else
+    echo "The directory $INSTALL_DIR already exists. Pulling the latest changes..."
+    cd "$INSTALL_DIR" || exit 1
+    git fetch origin || {
+      echo "ERROR: Failed to fetch the latest changes. Please check your Git configuration."
+      exit 1
+    }
+    echo "Resetting local branch to match remote branch..."
+    git reset --hard origin/main || {
+      echo "ERROR: Failed to reset to the latest changes. Please check your Git configuration."
+      exit 1
+    }
+  fi
+
+  # Dynamically set the library path after cloning
+  LIB_ARCHIVE="$INSTALL_DIR/lib/scripts.ar"
+}
+
+# Validate the library file
+validate_library() {
+  LIB_ARCHIVE="$HOME/.scripts/lib/scripts.ar"  # Dynamically set the library path
+  if [[ ! -f "$LIB_ARCHIVE" ]]; then
+    echo "ERROR: Library file $LIB_ARCHIVE not found. Aborting installation."
+    exit 1
+  fi
+}
+
+# Extract scripts from the library
+extract_scripts() {
+  echo "Extracting scripts from library..."
+  TARGET_DIR="$HOME/.scripts"
+  mkdir -p "$TARGET_DIR"
+
+  # Navigate to the target directory for extraction
+  cd "$TARGET_DIR" || exit 1
+  ar x "$LIB_ARCHIVE" || {
+    echo "ERROR: Failed to extract scripts from $LIB_ARCHIVE. Please check the archive."
+    exit 1
+  }
+
+  echo "Scripts extracted to $TARGET_DIR."
+}
+
+# Extract documentation from the library
+extract_docs() {
+  echo "Extracting documentation from library..."
+  local docs_archive="$HOME/.scripts/lib/docs.ar"
+  local docs_dir="$HOME/.scripts/docs"
+  
+  # Check if docs archive exists
+  if [[ ! -f "$docs_archive" ]]; then
+    echo "WARNING: Documentation archive not found at $docs_archive. Skipping docs extraction."
+    return
+  fi
+  
+  mkdir -p "$docs_dir"
+  
+  # Navigate to the docs directory for extraction
+  cd "$docs_dir" || {
+    echo "WARNING: Failed to create docs directory. Skipping docs extraction."
+    return
+  }
+  
+  ar x "$docs_archive" || {
+    echo "WARNING: Failed to extract documentation from $docs_archive."
+    return
+  }
+
+  echo "Documentation extracted to $docs_dir."
+}
+
+# Ensure the .jcscripts configuration file
+ensure_config_file() {
+  CONFIG_FILE="$HOME/.scripts/.jcscripts"
+  HOME_CONFIG_FILE="$HOME/.jcscripts"
+
+  # Create default configuration in the .scripts directory
+  echo "Creating or updating default configuration file: $CONFIG_FILE..."
+  cat <<EOL > "$CONFIG_FILE"
+# Configuration for scripts
+EDITOR="vi"
+SCRIPTS_DIR="~/.scripts"
+GITHUB_REPO="git@github.com:jcgarcia/jcscripts.git"
+SSH_KEY="~/.ssh/jc.pem"
+EOL
+  echo "Default configuration file created or updated in $CONFIG_FILE."
+
+  # Overwrite the configuration file in the home directory
+  echo "Copying configuration file to $HOME/.jcscripts..."
+  cp "$CONFIG_FILE" "$HOME_CONFIG_FILE"
+  echo "Configuration file updated at $HOME/.jcscripts."
+}
+
+# Make scripts executable
+make_executable() {
+  echo "Making valid scripts executable..."
+  find "$HOME/.scripts" -type f -exec chmod +x {} \;
+  echo "Scripts made executable."
+}
+
+# Fix line endings (convert CRLF to LF)
+fix_line_endings() {
+  echo "Checking and fixing line endings in scripts..."
+  
+  # Find all script files and convert CRLF to LF
+  find "$HOME/.scripts" -type f ! -path "*/\.*" ! -name "*.md" ! -name "*.pdf" ! -name "*.ar" -exec sh -c '
+    for file do
+      if file "$file" | grep -q "CRLF"; then
+        echo "Fixing line endings in: $file"
+        sed -i "s/\r$//" "$file"
+      fi
+    done
+  ' sh {} +
+  
+  echo "Line endings fixed."
+}
+
+# Add scripts directory to PATH
+update_path() {
+  echo "Adding scripts directory to PATH..."
+
+  # Determine the shell profile to update
+  SHELL_PROFILE=""
+  case "$SHELL" in
+    */bash)
+      SHELL_PROFILE="$HOME/.bashrc"
+      ;;
+    */ash)
+      SHELL_PROFILE="$HOME/.profile"
+      ;;
+    */csh | */tcsh)
+      SHELL_PROFILE="$HOME/.cshrc"
+      ;;
+    */ksh)
+      SHELL_PROFILE="$HOME/.kshrc"
+      ;;
+    *)
+      echo "WARNING: Unsupported shell detected. Please manually add $HOME/.scripts to your PATH."
+      return
+      ;;
+  esac
+
+  # Append PATH modification to the profile if not already added
+  if [[ -n "$SHELL_PROFILE" ]] && ! grep -q "export PATH=\$PATH:$HOME/.scripts" "$SHELL_PROFILE"; then
+    echo "export PATH=\$PATH:$HOME/.scripts" >> "$SHELL_PROFILE"
+  fi
+
+  # Apply PATH update immediately in the current session
+  export PATH="$PATH:$HOME/.scripts"
+  echo "PATH updated for the current session: $PATH"
+
+  # Reload the shell configuration for the current session
+  if [[ -f "$SHELL_PROFILE" ]]; then
+    echo "Reloading shell configuration from $SHELL_PROFILE..."
+    source "$SHELL_PROFILE" || . "$SHELL_PROFILE"
+  fi
+
+  # Verify that the PATH update is effective
+  if [[ ":$PATH:" != *":$HOME/.scripts:"* ]]; then
+    echo "ERROR: PATH update failed. Please manually add $HOME/.scripts to your PATH."
+    return 1
+  fi
+
+  echo "PATH updated for the current session and saved to $SHELL_PROFILE."
+}
+
+# Mark installation as complete
+mark_installation() {
+  MARKER="$HOME/.scripts_installed"
+  echo "Marking the installation as complete..."
+  touch "$MARKER"
+  echo "Installation marked with $MARKER."
+}
+
+# Function to extract the version from the script header of the current script
+extract_version() {
+    local script_file="$0"  # Referring to the current script
+    grep -i '^# Version:' "$script_file" | awk -F': ' '{print $2}'
+}
+
+# Helper function to display the version
+show_version() {
+    version=$(extract_version)
+    echo -e "${BOLD}${CYAN}Version: ${version}${RESET}" 
+}
+
+# Check and install required tools
+install_required_tools() {
+  echo "Checking for required tools..."
+
+  # Define required tools and their corresponding packages
+  local tools=(
+    "ar:binutils"       # 'ar' command from binutils
+    "column:util-linux" # 'column' command from util-linux
+    "tput:ncurses"      # 'tput' command from ncurses
+    "jq:jq"             # 'jq' for JSON parsing (AWS scripts)
+    "git:git"           # 'git' for version control
+    "curl:curl"         # 'curl' for downloading files
+    "unzip:unzip"       # 'unzip' for extracting archives
+  )
+
+  for tool in "${tools[@]}"; do
+    local command="${tool%%:*}"  # Extract the command (e.g., 'ar')
+    local package="${tool##*:}" # Extract the package (e.g., 'binutils')
+
+    if ! command -v "$command" &> /dev/null; then
+      echo "Installing missing tool: $command (package: $package)..."
+      if [[ -x "$(command -v apt)" ]]; then
+        sudo apt install -y "$package"
+      elif [[ -x "$(command -v dnf)" ]]; then
+        sudo dnf install -y "$package"
+      elif [[ -x "$(command -v pacman)" ]]; then
+        sudo pacman -S --noconfirm "$package"
+      elif [[ -x "$(command -v apk)" ]]; then
+        sudo apk add "$package"
+      else
+        echo "ERROR: Package manager not detected. Please install $package manually."
+        exit 1
+      fi
+      echo "$command installed successfully."
+    else
+      echo "$command is already installed."
+    fi
+  done
+
+  # Check for AWS CLI (informational only - not required)
+  if ! command -v aws &> /dev/null; then
+    echo ""
+    echo "NOTE: AWS CLI is not installed. AWS-related scripts will not work."
+    echo "You can install AWS CLI later by running: awsinstall"
+    echo ""
+  else
+    echo "AWS CLI is already installed: $(aws --version)"
+  fi
+}
+
+# Function to add the .scripts directory to PATH
+add_to_path() {
+  local shell_config
+  local is_alpine=false
+
+  # Detect if running on Alpine Linux
+  if [ -f /etc/os-release ]; then
+    if grep -q "^ID=alpine" /etc/os-release; then
+      is_alpine=true
+    fi
+  fi
+
+  # Determine the appropriate shell configuration file
+  if [[ "$is_alpine" == true ]]; then
+    # On Alpine, always use .profile (works for both ash and bash)
+    shell_config="$HOME/.profile"
+    # Also add to .bashrc if bash is the shell
+    if [[ "$SHELL" == *"bash"* ]]; then
+      if ! grep -q 'export PATH="$HOME/.scripts:$PATH"' "$HOME/.bashrc" 2>/dev/null; then
+        echo 'export PATH="$HOME/.scripts:$PATH"' >> "$HOME/.bashrc"
+        echo "Added .scripts directory to PATH in $HOME/.bashrc."
+      fi
+    fi
+  elif [[ "$SHELL" == *"bash"* ]]; then
+    shell_config="$HOME/.bashrc"
+  elif [[ "$SHELL" == *"ash"* ]]; then
+    shell_config="$HOME/.profile"
+  else
+    echo "Unsupported shell. Please add the following line to your shell configuration file manually:"
+    echo 'export PATH="$HOME/.scripts:$PATH"'
+    return
+  fi
+
+  # Add the .scripts directory to PATH if not already present
+  if ! grep -q 'export PATH="$HOME/.scripts:$PATH"' "$shell_config" 2>/dev/null; then
+    echo 'export PATH="$HOME/.scripts:$PATH"' >> "$shell_config"
+    echo "Added .scripts directory to PATH in $shell_config."
+  else
+    echo "The .scripts directory is already in your PATH in $shell_config."
+  fi
+
+  # Reload the shell configuration
+  if [[ -f "$shell_config" ]]; then
+    source "$shell_config" 2>/dev/null || . "$shell_config" 2>/dev/null || true
+    echo "Shell configuration reloaded from $shell_config."
+  fi
+  
+  # Export PATH for current session
+  export PATH="$HOME/.scripts:$PATH"
+}
+
+# Main function
+main() {
+  # Handle command-line options first
+  case "${1:-}" in
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    -v|--version)
+      show_version
+      exit 0
+      ;;
+    -*)
+      echo "ERROR: Unknown option: $1"
+      echo "Use -h or --help for usage information."
+      exit 1
+      ;;
+  esac
+
+  echo "Starting installation process..."
+
+  # Clone the repository first
+  clone_repository
+
+  # Dynamically set the library path after cloning
+  LIB_ARCHIVE="$HOME/.scripts/lib/scripts.ar"
+
+  # Ensure required tools are installed
+  install_required_tools
+
+  # Ensure the configuration file exists
+  ensure_config_file
+
+  # Validate the library file
+  validate_library
+
+  # Extract scripts from the library
+  extract_scripts
+
+  # Extract documentation from the library
+  extract_docs
+
+  # Make scripts executable
+  make_executable
+
+  # Fix line endings
+  fix_line_endings
+
+  # Update the PATH
+  update_path
+
+  # Add .scripts directory to PATH
+  add_to_path
+
+  # Mark the installation as complete
+  mark_installation
+
+  echo "Installation complete! Reload your config file (e.g. 'source ~/.bashrc') to run the scripts from any location."
+  echo ""
+  
+  # Check if AWS CLI is installed and provide appropriate message
+  # Use 'which' as fallback since 'command -v' may fail in some contexts
+  if command -v aws &> /dev/null || which aws &> /dev/null || [ -x /usr/local/bin/aws ]; then
+    echo "AWS CLI is already installed: $(aws --version 2>&1 || echo 'version check failed')"
+  else
+    echo "Optional: Install AWS CLI by running './awsinstall'"
+  fi
+}
+
+# Execute the main function
+main "$@"
+
